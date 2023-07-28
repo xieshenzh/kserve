@@ -1402,5 +1402,5 @@ tomlkit==0.11.8 \
     --hash=sha256:9330fc7faa1db67b541b28e62018c17d20be733177d290a13b24c62d1614e0c3
 poetry==1.4.0
 krbcontext==0.10
-hdfs~=2.6.0
+hdfs==2.6.0
 requests-kerberos==0.14.0
