@@ -1,5 +1,5 @@
 ARG PYTHON_VERSION=3.9
-ARG BASE_IMAGE=python:${PYTHON_VERSION}-slim-bullseye
+ARG BASE_IMAGE=registry.access.redhat.com/ubi8/ubi
 ARG VENV_PATH=/prod_venv
 
 FROM ${BASE_IMAGE} as builder
@@ -9,7 +9,7 @@ ARG POETRY_HOME=/opt/poetry
 ARG POETRY_VERSION=1.4.0
 
 # Required for building packages for arm64 arch
-RUN apt-get update && apt-get install -y --no-install-recommends python3-dev build-essential
+RUN yum -y update && yum -y install python39 python39-devel
 
 RUN python3 -m venv ${POETRY_HOME} && ${POETRY_HOME}/bin/pip install poetry==${POETRY_VERSION}
 ENV PATH="$PATH:${POETRY_HOME}/bin"
@@ -20,23 +20,23 @@ ENV VIRTUAL_ENV=${VENV_PATH}
 RUN python3 -m venv $VIRTUAL_ENV
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
+# Addressing vulnerability scans by upgrading pip/setuptools
+RUN python3 -m pip install --upgrade pip setuptools
+
 COPY kserve/pyproject.toml kserve/poetry.lock kserve/
 RUN cd kserve && poetry install --no-root --no-interaction --no-cache --extras "storage"
 COPY kserve kserve
 RUN cd kserve && poetry install --no-interaction --no-cache --extras "storage"
 
-ARG DEBIAN_FRONTEND=noninteractive
-
-RUN apt-get update && apt-get install -y \
+RUN yum -y update && yum install -y \
     gcc \
-    libkrb5-dev \
-    krb5-config \
+    krb5-devel \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir krbcontext==0.10 hdfs~=2.6.0 requests-kerberos==0.14.0
 
 
-FROM ${BASE_IMAGE} as prod
+FROM registry.access.redhat.com/ubi8/ubi-minimal as prod
 
 COPY third_party third_party
 
@@ -45,7 +45,8 @@ ARG VENV_PATH
 ENV VIRTUAL_ENV=${VENV_PATH}
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
-RUN useradd kserve -m -u 1000 -d /home/kserve
+RUN microdnf install python39 shadow-utils
+RUN adduser kserve -m -u 1000 -d /home/kserve
 
 COPY --from=builder --chown=kserve:kserve $VIRTUAL_ENV $VIRTUAL_ENV
 COPY --from=builder kserve kserve
