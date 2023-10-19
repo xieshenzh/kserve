@@ -9,7 +9,7 @@ ARG POETRY_HOME=/opt/poetry
 ARG POETRY_VERSION=1.4.0
 
 # Required for building packages for arm64 arch
-RUN yum -y update && yum -y install python39 python39-devel
+RUN yum -y update && yum -y install python39 python39-devel gcc
 
 RUN python3 -m venv ${POETRY_HOME} && ${POETRY_HOME}/bin/pip install poetry==${POETRY_VERSION}
 ENV PATH="$PATH:${POETRY_HOME}/bin"
