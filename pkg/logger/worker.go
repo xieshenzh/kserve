@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/cloudevents/sdk-go/pkg/cloudevents/transport"
 	cloudevents "github.com/cloudevents/sdk-go/v2"
 	"go.uber.org/zap"
 )
