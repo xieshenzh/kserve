@@ -19,7 +19,6 @@ package inferenceservice
 import (
 	"context"
 	"fmt"
-	"k8s.io/client-go/util/retry"
 	"reflect"
 
 	"k8s.io/client-go/util/retry"
