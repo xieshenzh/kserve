@@ -171,12 +171,32 @@ class Storage(object):  # pylint: disable=too-few-public-methods
         if verify_ssl:
             verify_ssl = not verify_ssl.lower() in ["0", "false"]
             kwargs.update({"verify": verify_ssl})
+        else:
+            verify_ssl = True
+
+        # If verify_ssl is true, then check there is custom ca bundle cert
+        if verify_ssl:
+            global_ca_bundle_configmap = os.getenv("CA_BUNDLE_CONFIGMAP_NAME")
+            if global_ca_bundle_configmap:
+                isvc_aws_ca_bundle_path = os.getenv("AWS_CA_BUNDLE")
+                if isvc_aws_ca_bundle_path and isvc_aws_ca_bundle_path != "":
+                    ca_bundle_full_path = isvc_aws_ca_bundle_path
+                else:
+                    global_ca_bundle_volume_mount_path = os.getenv("CA_BUNDLE_VOLUME_MOUNT_POINT")
+                    ca_bundle_full_path = global_ca_bundle_volume_mount_path + "/cabundle.crt"
+                if os.path.exists(ca_bundle_full_path):
+                    logging.info('ca bundle file(%s) exists.' % (ca_bundle_full_path))
+                    kwargs.update({"verify": ca_bundle_full_path})
+                else:
+                    raise RuntimeError(
+                       "Failed to find ca bundle file(%s)." % ca_bundle_full_path)
         s3 = boto3.resource("s3", **kwargs)
         parsed = urlparse(uri, scheme='s3')
         bucket_name = parsed.netloc
         bucket_path = parsed.path.lstrip('/')
 
         count = 0
+        exact_obj_found = False
         bucket = s3.Bucket(bucket_name)
         for obj in bucket.objects.filter(Prefix=bucket_path):
             # Skip where boto3 lists the directory as an object
@@ -196,17 +216,30 @@ class Storage(object):  # pylint: disable=too-few-public-methods
             # If 'uri' is set to "s3://test-bucket/a/b/c/model.bin", then
             # the downloader will add to temp dir: model.bin
             # (without any subpaths).
-            target_key = (
-                obj.key.rsplit("/", 1)[-1]
-                if bucket_path == obj.key
-                else obj.key.replace(bucket_path, "", 1).lstrip("/")
-            )
+            # If the bucket path is s3://test/models
+            # Objects: churn, churn-pickle, churn-pickle-logs
+            bucket_path_last_part = bucket_path.split("/")[-1]
+            object_last_path = obj.key.split("/")[-1]
+            bucket_path_parent_part = bucket_path.rsplit("/", 1)[0]
+
+            if bucket_path == obj.key:
+                target_key = obj.key.rsplit("/", 1)[-1]
+                exact_obj_found = True
+            elif object_last_path.startswith(bucket_path_last_part):
+                target_key = obj.key.replace(bucket_path_parent_part, "", 1).lstrip("/")
+            else:
+                target_key = obj.key.replace(bucket_path, "").lstrip("/")
+
             target = f"{temp_dir}/{target_key}"
             if not os.path.exists(os.path.dirname(target)):
                 os.makedirs(os.path.dirname(target), exist_ok=True)
             bucket.download_file(obj.key, target)
             logging.info('Downloaded object %s to %s' % (obj.key, target))
             count = count + 1
+
+            # If the exact object is found, then it is sufficient to download that and break the loop
+            if exact_obj_found:
+                break
         if count == 0:
             raise RuntimeError(
                 "Failed to fetch model. No model found in %s." % bucket_path)

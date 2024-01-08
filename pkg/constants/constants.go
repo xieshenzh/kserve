@@ -191,7 +191,8 @@ var (
 
 // Webhook Constants
 var (
-	PodMutatorWebhookName = KServeName + "-pod-mutator-webhook"
+	PodMutatorWebhookName              = KServeName + "-pod-mutator-webhook"
+	ServingRuntimeValidatorWebhookName = KServeName + "-servingRuntime-validator-webhook"
 )
 
 // GPU Constants
@@ -241,11 +242,12 @@ const (
 
 // InferenceService protocol enums
 const (
-	ProtocolV1      InferenceServiceProtocol = "v1"
-	ProtocolV2      InferenceServiceProtocol = "v2"
-	ProtocolGRPCV1  InferenceServiceProtocol = "grpc-v1"
-	ProtocolGRPCV2  InferenceServiceProtocol = "grpc-v2"
-	ProtocolUnknown InferenceServiceProtocol = ""
+	ProtocolV1         InferenceServiceProtocol = "v1"
+	ProtocolV2         InferenceServiceProtocol = "v2"
+	ProtocolGRPCV1     InferenceServiceProtocol = "grpc-v1"
+	ProtocolGRPCV2     InferenceServiceProtocol = "grpc-v2"
+	ProtocolUnknown    InferenceServiceProtocol = ""
+	ProtocolVersionENV                          = "PROTOCOL_VERSION"
 )
 
 // InferenceService Endpoint Ports
@@ -298,6 +300,21 @@ const (
 
 // DefaultModelLocalMountPath is where models will be mounted by the storage-initializer
 const DefaultModelLocalMountPath = "/mnt/models"
+
+// Default path to mount CA bundle configmap volume
+const DefaultCaBundleVolumeMountPath = "/etc/ssl/custom-certs"
+
+// Default name for CA bundle file
+const DefaultCaBundleFileName = "cabundle.crt"
+
+// Default CA bundle configmap name that will be created in the user namespace.
+const DefaultGlobalCaBundleConfigMapName = "global-ca-bundle"
+
+// Custom CA bundle configmap Environment Variables
+const (
+	CaBundleConfigMapNameEnvVarKey   = "CA_BUNDLE_CONFIGMAP_NAME"
+	CaBundleVolumeMountPathEnvVarKey = "CA_BUNDLE_VOLUME_MOUNT_POINT"
+)
 
 // Multi-model InferenceService
 const (
