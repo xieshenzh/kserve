@@ -93,7 +93,7 @@ data:
            # enableDirectPvcVolumeMount controls whether users can mount pvc volumes directly.
            # if pvc volume is provided in storageuri then the pvc volume is directly mounted to /mnt/models in the user container.
            # rather than symlink it to a shared volume. For more info see https://github.com/kserve/kserve/issues/2737
-           "enableDirectPvcVolumeMount": false
+           "enableDirectPvcVolumeMount": true
        }
      
      # ====================================== CREDENTIALS ======================================
@@ -427,7 +427,7 @@ data:
         "cpuLimit": "1",
         "caBundleConfigMapName": "",
         "caBundleVolumeMountPath": "/etc/ssl/custom-certs",
-        "enableDirectPvcVolumeMount": false
+        "enableDirectPvcVolumeMount": true
     }
 
   credentials: |-
