@@ -93,7 +93,7 @@ data:
            # enableDirectPvcVolumeMount controls whether users can mount pvc volumes directly.
            # if pvc volume is provided in storageuri then the pvc volume is directly mounted to /mnt/models in the user container.
            # rather than symlink it to a shared volume. For more info see https://github.com/kserve/kserve/issues/2737
-           "enableDirectPvcVolumeMount": false
+           "enableDirectPvcVolumeMount": true
        }
      
      # ====================================== CREDENTIALS ======================================
@@ -188,7 +188,8 @@ data:
            "ingressClassName" : "istio",
            "domainTemplate": "{{ .Name }}-{{ .Namespace }}.{{ .IngressDomain }}",
            "urlScheme": "http",
-           "disableIstioVirtualHost": false
+           "disableIstioVirtualHost": false,
+           "disableIngressCreation": false
        }
      ingress: |-
        {
@@ -240,7 +241,10 @@ data:
            # By setting this field to true, user can use other networking layers supported by knative.
            # For more info https://github.com/kserve/kserve/pull/2380, https://kserve.github.io/website/master/admin/serverless/kourier_networking/.
            # NOTE: This configuration is only applicable to serverless deployment.
-           "disableIstioVirtualHost": false
+           "disableIstioVirtualHost": false,
+
+           # disableIngressCreation controls whether to disable ingress creation for raw deployment mode.
+           "disableIngressCreation": false,
      
            # pathTemplate specifies the template for generating path based url for each inference service.
            # The following variables can be used in the template for generating url.
@@ -427,7 +431,7 @@ data:
         "cpuLimit": "1",
         "caBundleConfigMapName": "",
         "caBundleVolumeMountPath": "/etc/ssl/custom-certs",
-        "enableDirectPvcVolumeMount": false
+        "enableDirectPvcVolumeMount": true
     }
 
   credentials: |-
@@ -460,7 +464,8 @@ data:
         "ingressClassName" : "istio",
         "domainTemplate": "{{ .Name }}-{{ .Namespace }}.{{ .IngressDomain }}",
         "urlScheme": "http",
-        "disableIstioVirtualHost": false
+        "disableIstioVirtualHost": false,
+        "disableIngressCreation": false
     }
 
   logger: |-

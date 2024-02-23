@@ -32,6 +32,7 @@ kserve:
       domain: example.com
       domainTemplate: "{{ .Name }}-{{ .Namespace }}.{{ .IngressDomain }}"
       urlScheme: http
+      disableIngressCreation: false
       localGateway:
         gateway: knative-serving/knative-local-gateway
         gatewayService: knative-local-gateway.istio-system.svc.cluster.local
