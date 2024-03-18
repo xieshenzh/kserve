@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: instant-merge
-        if: ${{ github.event.sender.login == 'red-hat-konflux' && startsWith(github.event.pull_request.title, 'Update kserve-') }}
+        if: ${{ github.event.sender.login == 'red-hat-konflux[bot]' && startsWith(github.event.pull_request.title, 'Update kserve-') }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
