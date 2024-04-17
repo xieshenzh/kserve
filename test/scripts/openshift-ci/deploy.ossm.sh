@@ -34,53 +34,6 @@ waitpodready() {
 }
 
 
-# Deploy Distributed tracing operator (Jaeger)
-cat <<EOF | oc apply -f -
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: openshift-distributed-tracing
----
-apiVersion: operators.coreos.com/v1
-kind: OperatorGroup
-metadata:
-  name: openshift-distributed-tracing
-  namespace: openshift-distributed-tracing
-spec:
-  upgradeStrategy: Default
----
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: jaeger-product
-  namespace: openshift-distributed-tracing
-spec:
-  channel: stable
-  installPlanApproval: Automatic
-  name: jaeger-product
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
-
-waitpodready "openshift-distributed-tracing" "name=jaeger-operator"
-
-# Deploy Kiali operator
-cat <<EOF | oc apply -f -
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: kiali-ossm
-  namespace: openshift-operators
-spec:
-  channel: stable
-  installPlanApproval: Automatic
-  name: kiali-ossm
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-EOF
-
-waitpodready "openshift-operators" "app=kiali-operator"
-
 # Deploy OSSM operator
 cat <<EOF | oc apply -f -
 apiVersion: operators.coreos.com/v1alpha1
