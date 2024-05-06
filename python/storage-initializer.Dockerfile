@@ -34,6 +34,8 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir krbcontext==0.10 hdfs~=2.6.0 requests-kerberos==0.14.0
+# Fixes Quay alert GHSA-2jv5-9r88-3w3p https://github.com/Kludex/python-multipart/security/advisories/GHSA-2jv5-9r88-3w3p
+RUN pip install --no-cache-dir starlette==0.36.2
 
 
 FROM ${BASE_IMAGE} as prod

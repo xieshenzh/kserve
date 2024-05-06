@@ -22,15 +22,6 @@ import (
 	"os"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	"github.com/kserve/kserve/pkg/apis/serving/v1alpha1"
-	"github.com/kserve/kserve/pkg/apis/serving/v1beta1"
-	"github.com/kserve/kserve/pkg/constants"
-	graphcontroller "github.com/kserve/kserve/pkg/controller/v1alpha1/inferencegraph"
-	trainedmodelcontroller "github.com/kserve/kserve/pkg/controller/v1alpha1/trainedmodel"
-	"github.com/kserve/kserve/pkg/controller/v1alpha1/trainedmodel/reconcilers/modelconfig"
-	v1beta1controller "github.com/kserve/kserve/pkg/controller/v1beta1/inferenceservice"
-	"github.com/kserve/kserve/pkg/webhook/admission/pod"
-	"github.com/kserve/kserve/pkg/webhook/admission/servingruntime"
 	istio_networking "istio.io/api/networking/v1beta1"
 	istioclientv1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	v1 "k8s.io/api/core/v1"
@@ -41,13 +32,22 @@ import (
 	"k8s.io/client-go/tools/record"
 	knservingv1 "knative.dev/serving/pkg/apis/serving/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/manager/signals"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+
+	"github.com/kserve/kserve/pkg/apis/serving/v1alpha1"
+	"github.com/kserve/kserve/pkg/apis/serving/v1beta1"
+	"github.com/kserve/kserve/pkg/constants"
+	graphcontroller "github.com/kserve/kserve/pkg/controller/v1alpha1/inferencegraph"
+	trainedmodelcontroller "github.com/kserve/kserve/pkg/controller/v1alpha1/trainedmodel"
+	"github.com/kserve/kserve/pkg/controller/v1alpha1/trainedmodel/reconcilers/modelconfig"
+	v1beta1controller "github.com/kserve/kserve/pkg/controller/v1beta1/inferenceservice"
+	"github.com/kserve/kserve/pkg/webhook/admission/pod"
+	"github.com/kserve/kserve/pkg/webhook/admission/servingruntime"
 )
 
 var (
@@ -111,6 +111,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Setup clientset to directly talk to the api server
+	clientSet, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		setupLog.Error(err, "unable to create clientSet")
+		os.Exit(1)
+	}
+
 	// Create a new Cmd to provide shared dependencies and start components
 	setupLog.Info("Setting up manager")
 	mgr, err := manager.New(cfg, manager.Options{
@@ -141,17 +148,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	kubeClient, err := client.New(mgr.GetConfig(), client.Options{Scheme: mgr.GetScheme()})
-	if err != nil {
-		setupLog.Error(err, "unable to create new client.")
-	}
-
-	deployConfig, err := v1beta1.NewDeployConfig(kubeClient)
+	deployConfig, err := v1beta1.NewDeployConfig(clientSet)
 	if err != nil {
 		setupLog.Error(err, "unable to get deploy config.")
 		os.Exit(1)
 	}
-	ingressConfig, err := v1beta1.NewIngressConfig(kubeClient)
+	ingressConfig, err := v1beta1.NewIngressConfig(clientSet)
 	if err != nil {
 		setupLog.Error(err, "unable to get ingress config.")
 		os.Exit(1)
@@ -180,16 +182,12 @@ func main() {
 	// Setup all Controllers
 	setupLog.Info("Setting up v1beta1 controller")
 	eventBroadcaster := record.NewBroadcaster()
-	clientSet, err := kubernetes.NewForConfig(mgr.GetConfig())
-	if err != nil {
-		setupLog.Error(err, "unable to create clientSet")
-		os.Exit(1)
-	}
 	eventBroadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{Interface: clientSet.CoreV1().Events("")})
 	if err = (&v1beta1controller.InferenceServiceReconciler{
-		Client: mgr.GetClient(),
-		Log:    ctrl.Log.WithName("v1beta1Controllers").WithName("InferenceService"),
-		Scheme: mgr.GetScheme(),
+		Client:    mgr.GetClient(),
+		Clientset: clientSet,
+		Log:       ctrl.Log.WithName("v1beta1Controllers").WithName("InferenceService"),
+		Scheme:    mgr.GetScheme(),
 		Recorder: eventBroadcaster.NewRecorder(
 			mgr.GetScheme(), v1.EventSource{Component: "v1beta1Controllers"}),
 	}).SetupWithManager(mgr, deployConfig, ingressConfig); err != nil {
@@ -206,7 +204,7 @@ func main() {
 		Log:                   ctrl.Log.WithName("v1beta1Controllers").WithName("TrainedModel"),
 		Scheme:                mgr.GetScheme(),
 		Recorder:              eventBroadcaster.NewRecorder(mgr.GetScheme(), v1.EventSource{Component: "v1beta1Controllers"}),
-		ModelConfigReconciler: modelconfig.NewModelConfigReconciler(mgr.GetClient(), mgr.GetScheme()),
+		ModelConfigReconciler: modelconfig.NewModelConfigReconciler(mgr.GetClient(), clientSet, mgr.GetScheme()),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "v1beta1Controllers", "TrainedModel")
 		os.Exit(1)
@@ -217,10 +215,11 @@ func main() {
 	setupLog.Info("Setting up InferenceGraph controller")
 	inferenceGraphEventBroadcaster.StartRecordingToSink(&typedcorev1.EventSinkImpl{Interface: clientSet.CoreV1().Events("")})
 	if err = (&graphcontroller.InferenceGraphReconciler{
-		Client:   mgr.GetClient(),
-		Log:      ctrl.Log.WithName("v1alpha1Controllers").WithName("InferenceGraph"),
-		Scheme:   mgr.GetScheme(),
-		Recorder: eventBroadcaster.NewRecorder(mgr.GetScheme(), v1.EventSource{Component: "InferenceGraphController"}),
+		Client:    mgr.GetClient(),
+		Clientset: clientSet,
+		Log:       ctrl.Log.WithName("v1alpha1Controllers").WithName("InferenceGraph"),
+		Scheme:    mgr.GetScheme(),
+		Recorder:  eventBroadcaster.NewRecorder(mgr.GetScheme(), v1.EventSource{Component: "InferenceGraphController"}),
 	}).SetupWithManager(mgr, deployConfig); err != nil {
 		setupLog.Error(err, "unable to create controller", "v1alpha1Controllers", "InferenceGraph")
 		os.Exit(1)
@@ -231,7 +230,7 @@ func main() {
 
 	setupLog.Info("registering webhooks to the webhook server")
 	hookServer.Register("/mutate-pods", &webhook.Admission{
-		Handler: &pod.Mutator{Client: mgr.GetClient(), Decoder: admission.NewDecoder(mgr.GetScheme())},
+		Handler: &pod.Mutator{Client: mgr.GetClient(), Clientset: clientSet, Decoder: admission.NewDecoder(mgr.GetScheme())},
 	})
 
 	//log.Info("registering cluster serving runtime validator webhook to the webhook server")

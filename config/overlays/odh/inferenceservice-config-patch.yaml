@@ -24,7 +24,8 @@ data:
         "ingressClassName" : "istio",
         "domainTemplate": "{{ .Name }}-{{ .Namespace }}.{{ .IngressDomain }}",
         "urlScheme": "https",
-        "disableIstioVirtualHost": false
+        "disableIstioVirtualHost": false, 
+        "disableIngressCreation": true
     }
   logger: |-
     {
