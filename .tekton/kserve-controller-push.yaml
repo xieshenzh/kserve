@@ -24,7 +24,7 @@ spec:
   - name: git-url
     value: '{{source_url}}'
   - name: output-image
-    value: quay.io/redhat-user-workloads/rhoai-tenant/kserve-controller/kserve-controller:{{revision}}
+    value: quay.io/modh/kserve-controller:nightly
   - name: path-context
     value: .
   - name: revision
