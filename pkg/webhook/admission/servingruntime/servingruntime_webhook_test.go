@@ -18,10 +18,10 @@ package servingruntime
 
 import (
 	"fmt"
-	"github.com/golang/protobuf/proto"
 	"github.com/kserve/kserve/pkg/apis/serving/v1alpha1"
 	"github.com/kserve/kserve/pkg/constants"
 	"github.com/onsi/gomega"
+	"google.golang.org/protobuf/proto"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"testing"
@@ -1342,6 +1342,107 @@ func TestValidateServingRuntimePriority(t *testing.T) {
 			g := gomega.NewGomegaWithT(t)
 			err := validateServingRuntimePriority(&scenario.newServingRuntime.Spec, &scenario.existingServingRuntime.Spec,
 				scenario.newServingRuntime.Name, scenario.existingServingRuntime.Name)
+			g.Expect(err).To(scenario.expected)
+		})
+	}
+}
+
+func TestValidateModelFormatPrioritySame(t *testing.T) {
+	scenarios := map[string]struct {
+		name              string
+		newServingRuntime *v1alpha1.ServingRuntime
+		expected          gomega.OmegaMatcher
+	}{
+		"When different priority assigned for the same model format in the runtime then it should return error": {
+			newServingRuntime: &v1alpha1.ServingRuntime{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "example-runtime-1",
+					Namespace: "test",
+				},
+				Spec: v1alpha1.ServingRuntimeSpec{
+					SupportedModelFormats: []v1alpha1.SupportedModelFormat{
+						{
+							Name:       "sklearn",
+							AutoSelect: proto.Bool(true),
+							Priority:   proto.Int32(1),
+						},
+						{
+							Name:       "sklearn",
+							AutoSelect: proto.Bool(true),
+							Priority:   proto.Int32(2),
+						},
+					},
+					MultiModel: proto.Bool(false),
+					Disabled:   proto.Bool(false),
+					ProtocolVersions: []constants.InferenceServiceProtocol{
+						constants.ProtocolV1,
+						constants.ProtocolV2,
+					},
+					ServingRuntimePodSpec: v1alpha1.ServingRuntimePodSpec{
+						Containers: []corev1.Container{
+							{
+								Name:  constants.InferenceServiceContainerName,
+								Image: "kserve/sklearnserver:latest",
+								Args: []string{
+									"--model_name={{.Name}}",
+									"--model_dir=/mnt/models",
+									"--http_port=8080",
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: gomega.Equal(fmt.Errorf(ProrityIsNotSameError, "sklearn")),
+		},
+		"When same priority assigned for the same model format in the runtime then it should return nil": {
+			newServingRuntime: &v1alpha1.ServingRuntime{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "example-runtime-1",
+					Namespace: "test",
+				},
+				Spec: v1alpha1.ServingRuntimeSpec{
+					SupportedModelFormats: []v1alpha1.SupportedModelFormat{
+						{
+							Name:       "sklearn",
+							AutoSelect: proto.Bool(true),
+							Priority:   proto.Int32(2),
+						},
+						{
+							Name:       "sklearn",
+							AutoSelect: proto.Bool(true),
+							Priority:   proto.Int32(2),
+						},
+					},
+					MultiModel: proto.Bool(false),
+					Disabled:   proto.Bool(false),
+					ProtocolVersions: []constants.InferenceServiceProtocol{
+						constants.ProtocolV1,
+						constants.ProtocolV2,
+					},
+					ServingRuntimePodSpec: v1alpha1.ServingRuntimePodSpec{
+						Containers: []corev1.Container{
+							{
+								Name:  constants.InferenceServiceContainerName,
+								Image: "kserve/sklearnserver:latest",
+								Args: []string{
+									"--model_name={{.Name}}",
+									"--model_dir=/mnt/models",
+									"--http_port=8080",
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: gomega.BeNil(),
+		},
+	}
+
+	for name, scenario := range scenarios {
+		t.Run(name, func(t *testing.T) {
+			g := gomega.NewGomegaWithT(t)
+			err := validateModelFormatPrioritySame(&scenario.newServingRuntime.Spec, scenario.newServingRuntime.Name)
 			g.Expect(err).To(scenario.expected)
 		})
 	}

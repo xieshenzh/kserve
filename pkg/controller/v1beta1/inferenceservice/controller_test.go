@@ -23,7 +23,6 @@ import (
 
 	"knative.dev/pkg/kmp"
 
-	"github.com/golang/protobuf/proto"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/kserve/kserve/pkg/apis/serving/v1alpha1"
@@ -33,8 +32,9 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	. "github.com/onsi/gomega"
-	istiov1alpha3 "istio.io/api/networking/v1alpha3"
-	"istio.io/client-go/pkg/apis/networking/v1alpha3"
+	"google.golang.org/protobuf/proto"
+	istiov1beta1 "istio.io/api/networking/v1beta1"
+	istioclientv1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
 	v1 "k8s.io/api/core/v1"
 	apierr "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -269,9 +269,18 @@ var _ = Describe("v1beta1 inference service controller", func() {
 							},
 						},
 					},
+					RouteSpec: knservingv1.RouteSpec{
+						Traffic: []knservingv1.TrafficTarget{{LatestRevision: proto.Bool(true), Percent: proto.Int64(100)}},
+					},
 				},
 			}
-			expectedService.SetDefaults(context.TODO())
+			// Set ResourceVersion which is required for update operation.
+			expectedService.ResourceVersion = actualService.ResourceVersion
+
+			// Do a dry-run update. This will populate our local knative service object with any default values
+			// that are present on the remote version.
+			err := k8sClient.Update(context.TODO(), expectedService, client.DryRunAll)
+			Expect(err).Should(BeNil())
 			Expect(kmp.SafeDiff(actualService.Spec, expectedService.Spec)).To(Equal(""))
 			predictorUrl, _ := apis.ParseURL("http://" + constants.InferenceServiceHostName(constants.DefaultPredictorServiceName(serviceKey.Name), serviceKey.Namespace, domain))
 			// update predictor
@@ -297,14 +306,14 @@ var _ = Describe("v1beta1 inference service controller", func() {
 				Expect(k8sClient.Status().Update(context.TODO(), updatedService)).NotTo(gomega.HaveOccurred())
 			}
 			//assert ingress
-			virtualService := &v1alpha3.VirtualService{}
+			virtualService := &istioclientv1beta1.VirtualService{}
 			Eventually(func() error {
 				return k8sClient.Get(context.TODO(), types.NamespacedName{Name: serviceKey.Name,
 					Namespace: serviceKey.Namespace}, virtualService)
 			}, timeout).
 				Should(gomega.Succeed())
-			expectedVirtualService := &v1alpha3.VirtualService{
-				Spec: istiov1alpha3.VirtualService{
+			expectedVirtualService := &istioclientv1beta1.VirtualService{
+				Spec: istiov1beta1.VirtualService{
 					Gateways: []string{
 						constants.KnativeLocalGateway,
 						constants.KnativeIngressGateway,
@@ -313,37 +322,37 @@ var _ = Describe("v1beta1 inference service controller", func() {
 						network.GetServiceHostname(serviceKey.Name, serviceKey.Namespace),
 						constants.InferenceServiceHostName(serviceKey.Name, serviceKey.Namespace, domain),
 					},
-					Http: []*istiov1alpha3.HTTPRoute{
+					Http: []*istiov1beta1.HTTPRoute{
 						{
-							Match: []*istiov1alpha3.HTTPMatchRequest{
+							Match: []*istiov1beta1.HTTPMatchRequest{
 								{
 									Gateways: []string{constants.KnativeLocalGateway},
-									Authority: &istiov1alpha3.StringMatch{
-										MatchType: &istiov1alpha3.StringMatch_Regex{
+									Authority: &istiov1beta1.StringMatch{
+										MatchType: &istiov1beta1.StringMatch_Regex{
 											Regex: constants.HostRegExp(network.GetServiceHostname(serviceKey.Name, serviceKey.Namespace)),
 										},
 									},
 								},
 								{
 									Gateways: []string{constants.KnativeIngressGateway},
-									Authority: &istiov1alpha3.StringMatch{
-										MatchType: &istiov1alpha3.StringMatch_Regex{
+									Authority: &istiov1beta1.StringMatch{
+										MatchType: &istiov1beta1.StringMatch_Regex{
 											Regex: constants.HostRegExp(constants.InferenceServiceHostName(serviceKey.Name, serviceKey.Namespace, domain)),
 										},
 									},
 								},
 							},
-							Route: []*istiov1alpha3.HTTPRouteDestination{
+							Route: []*istiov1beta1.HTTPRouteDestination{
 								{
-									Destination: &istiov1alpha3.Destination{
+									Destination: &istiov1beta1.Destination{
 										Host: network.GetServiceHostname("knative-local-gateway", "istio-system"),
-										Port: &istiov1alpha3.PortSelector{Number: constants.CommonDefaultHttpPort},
+										Port: &istiov1beta1.PortSelector{Number: constants.CommonDefaultHttpPort},
 									},
 									Weight: 100,
 								},
 							},
-							Headers: &istiov1alpha3.Headers{
-								Request: &istiov1alpha3.Headers_HeaderOperations{
+							Headers: &istiov1beta1.Headers{
+								Request: &istiov1beta1.Headers_HeaderOperations{
 									Set: map[string]string{
 										"Host": network.GetServiceHostname(constants.PredictorServiceName(serviceKey.Name), serviceKey.Namespace),
 									},
@@ -353,7 +362,7 @@ var _ = Describe("v1beta1 inference service controller", func() {
 					},
 				},
 			}
-			Expect(virtualService.Spec).To(gomega.Equal(expectedVirtualService.Spec))
+			Expect(virtualService.Spec.DeepCopy()).To(gomega.Equal(expectedVirtualService.Spec.DeepCopy()))
 
 			//get inference service
 			time.Sleep(10 * time.Second)
@@ -374,13 +383,13 @@ var _ = Describe("v1beta1 inference service controller", func() {
 
 			Expect(k8sClient.Update(ctx, updatedIsvc)).NotTo(gomega.HaveOccurred())
 			time.Sleep(10 * time.Second)
-			updatedVirtualService := &v1alpha3.VirtualService{}
+			updatedVirtualService := &istioclientv1beta1.VirtualService{}
 			Eventually(func() error {
 				return k8sClient.Get(ctx, types.NamespacedName{Name: serviceKey.Name,
 					Namespace: serviceKey.Namespace}, updatedVirtualService)
 			}, timeout, interval).Should(gomega.Succeed())
 
-			Expect(updatedVirtualService.Spec).To(gomega.Equal(expectedVirtualService.Spec))
+			Expect(updatedVirtualService.Spec.DeepCopy()).To(gomega.Equal(expectedVirtualService.Spec.DeepCopy()))
 			Expect(updatedVirtualService.Annotations).To(gomega.Equal(annotations))
 			Expect(updatedVirtualService.Labels).To(gomega.Equal(labels))
 		})
@@ -646,7 +655,13 @@ var _ = Describe("v1beta1 inference service controller", func() {
 					},
 				},
 			}
-			expectedTransformerService.SetDefaults(context.TODO())
+			// Set ResourceVersion which is required for update operation.
+			expectedTransformerService.ResourceVersion = transformerService.ResourceVersion
+
+			// Do a dry-run update. This will populate our local knative service object with any default values
+			// that are present on the remote version.
+			err := k8sClient.Update(context.TODO(), expectedTransformerService, client.DryRunAll)
+			Expect(err).Should(BeNil())
 			Expect(cmp.Diff(transformerService.Spec, expectedTransformerService.Spec)).To(gomega.Equal(""))
 
 			// mock update knative service status since knative serving controller is not running in test
@@ -941,7 +956,13 @@ var _ = Describe("v1beta1 inference service controller", func() {
 					},
 				},
 			}
-			expectedExplainerService.SetDefaults(context.TODO())
+			// Set ResourceVersion which is required for update operation.
+			expectedExplainerService.ResourceVersion = explainerService.ResourceVersion
+
+			// Do a dry-run update. This will populate our local knative service object with any default values
+			// that are present on the remote version.
+			err := k8sClient.Update(context.TODO(), explainerService, client.DryRunAll)
+			Expect(err).Should(BeNil())
 			Expect(cmp.Diff(explainerService.Spec, expectedExplainerService.Spec)).To(gomega.Equal(""))
 
 			// mock update knative service status since knative serving controller is not running in test
@@ -1194,7 +1215,7 @@ var _ = Describe("v1beta1 inference service controller", func() {
 					RevisionName:   "revision-v1",
 					Percent:        proto.Int64(100),
 				}}
-			Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			Expect(retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 				return k8sClient.Status().Update(context.TODO(), updatedService)
 			})).NotTo(gomega.HaveOccurred())
 
@@ -1561,7 +1582,13 @@ var _ = Describe("v1beta1 inference service controller", func() {
 				},
 			}
 
-			expectedPredictorService.SetDefaults(context.TODO())
+			// Set ResourceVersion which is required for update operation.
+			expectedPredictorService.ResourceVersion = predictorService.ResourceVersion
+
+			// Do a dry-run update. This will populate our local knative service object with any default values
+			// that are present on the remote version.
+			err := k8sClient.Update(context.TODO(), predictorService, client.DryRunAll)
+			Expect(err).Should(BeNil())
 			Expect(cmp.Diff(predictorService.Spec, expectedPredictorService.Spec)).To(gomega.Equal(""))
 
 		})
@@ -2017,7 +2044,7 @@ var _ = Describe("v1beta1 inference service controller", func() {
 					Status: "False",
 				},
 			}
-			Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			Expect(retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 				return k8sClient.Status().Update(context.TODO(), updatedService)
 			})).NotTo(gomega.HaveOccurred())
 

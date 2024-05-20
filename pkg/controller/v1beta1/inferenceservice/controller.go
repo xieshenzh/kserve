@@ -21,9 +21,25 @@ import (
 	"fmt"
 	"reflect"
 
-	"k8s.io/client-go/util/retry"
-
 	"github.com/go-logr/logr"
+	"github.com/pkg/errors"
+	istioclientv1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
+	appsv1 "k8s.io/api/apps/v1"
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
+	apierr "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/record"
+	"knative.dev/pkg/apis"
+	knservingv1 "knative.dev/serving/pkg/apis/serving/v1"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
 	v1alpha1api "github.com/kserve/kserve/pkg/apis/serving/v1alpha1"
 	v1beta1api "github.com/kserve/kserve/pkg/apis/serving/v1beta1"
 	"github.com/kserve/kserve/pkg/constants"
@@ -33,22 +49,6 @@ import (
 	modelconfig "github.com/kserve/kserve/pkg/controller/v1beta1/inferenceservice/reconcilers/modelconfig"
 	isvcutils "github.com/kserve/kserve/pkg/controller/v1beta1/inferenceservice/utils"
 	"github.com/kserve/kserve/pkg/utils"
-	"github.com/pkg/errors"
-	"istio.io/client-go/pkg/apis/networking/v1alpha3"
-	appsv1 "k8s.io/api/apps/v1"
-	v1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/equality"
-	apierr "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/record"
-	"knative.dev/pkg/apis"
-	knservingv1 "knative.dev/serving/pkg/apis/serving/v1"
-	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 // +kubebuilder:rbac:groups=serving.kserve.io,resources=inferenceservices;inferenceservices/finalizers,verbs=get;list;watch;create;update;patch;delete
@@ -69,9 +69,9 @@ import (
 // +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=mutatingwebhookconfigurations;validatingwebhookconfigurations,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch
-// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create
-// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get
+// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;create
+// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=events,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
@@ -89,6 +89,7 @@ const (
 type InferenceServiceReconciler struct {
 	client.Client
 	ClientConfig *rest.Config
+	Clientset    kubernetes.Interface
 	Log          logr.Logger
 	Scheme       *runtime.Scheme
 	Recorder     record.EventRecorder
@@ -112,7 +113,7 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return !utils.Includes(constants.ServiceAnnotationDisallowedList, key)
 	})
 
-	deployConfig, err := v1beta1api.NewDeployConfig(r.Client)
+	deployConfig, err := v1beta1api.NewDeployConfig(r.Clientset)
 	if err != nil {
 		return reconcile.Result{}, errors.Wrapf(err, "fails to create DeployConfig")
 	}
@@ -176,32 +177,32 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		if !ksvcAvailable {
 			r.Recorder.Event(isvc, v1.EventTypeWarning, "ServerlessModeRejected",
 				"It is not possible to use Serverless deployment mode when Knative Services are not available")
-			return reconcile.Result{Requeue: false}, nil
+			return reconcile.Result{Requeue: false}, reconcile.TerminalError(fmt.Errorf("the resolved deployment mode of InferenceService '%s' is Serverless, but Knative Serving is not available", isvc.Name))
 		}
 	}
 
 	// Setup reconcilers
 	r.Log.Info("Reconciling inference service", "apiVersion", isvc.APIVersion, "isvc", isvc.Name)
-	isvcConfig, err := v1beta1api.NewInferenceServicesConfig(r.Client)
+	isvcConfig, err := v1beta1api.NewInferenceServicesConfig(r.Clientset)
 	if err != nil {
 		return reconcile.Result{}, errors.Wrapf(err, "fails to create InferenceServicesConfig")
 	}
 
 	// Reconcile cabundleConfigMap
-	caBundleConfigMapReconciler := cabundleconfigmap.NewCaBundleConfigMapReconciler(r.Client, r.Scheme)
+	caBundleConfigMapReconciler := cabundleconfigmap.NewCaBundleConfigMapReconciler(r.Client, r.Clientset, r.Scheme)
 	if err := caBundleConfigMapReconciler.Reconcile(isvc); err != nil {
 		return reconcile.Result{}, err
 	}
 
 	reconcilers := []components.Component{}
 	if deploymentMode != constants.ModelMeshDeployment {
-		reconcilers = append(reconcilers, components.NewPredictor(r.Client, r.Scheme, isvcConfig, deploymentMode))
+		reconcilers = append(reconcilers, components.NewPredictor(r.Client, r.Clientset, r.Scheme, isvcConfig, deploymentMode))
 	}
 	if isvc.Spec.Transformer != nil {
-		reconcilers = append(reconcilers, components.NewTransformer(r.Client, r.Scheme, isvcConfig, deploymentMode))
+		reconcilers = append(reconcilers, components.NewTransformer(r.Client, r.Clientset, r.Scheme, isvcConfig, deploymentMode))
 	}
 	if isvc.Spec.Explainer != nil {
-		reconcilers = append(reconcilers, components.NewExplainer(r.Client, r.Scheme, isvcConfig, deploymentMode))
+		reconcilers = append(reconcilers, components.NewExplainer(r.Client, r.Clientset, r.Scheme, isvcConfig, deploymentMode))
 	}
 	for _, reconciler := range reconcilers {
 		result, err := reconciler.Reconcile(isvc)
@@ -228,7 +229,7 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		isvc.Status.PropagateCrossComponentStatus(componentList, v1beta1api.LatestDeploymentReady)
 	}
 	//Reconcile ingress
-	ingressConfig, err := v1beta1api.NewIngressConfig(r.Client)
+	ingressConfig, err := v1beta1api.NewIngressConfig(r.Clientset)
 	if err != nil {
 		return reconcile.Result{}, errors.Wrapf(err, "fails to create IngressConfig")
 	}
@@ -251,7 +252,7 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 
 	// Reconcile modelConfig
-	configMapReconciler := modelconfig.NewModelConfigReconciler(r.Client, r.Scheme)
+	configMapReconciler := modelconfig.NewModelConfigReconciler(r.Client, r.Clientset, r.Scheme)
 	if err := configMapReconciler.Reconcile(isvc); err != nil {
 		return reconcile.Result{}, err
 	}
@@ -265,40 +266,34 @@ func (r *InferenceServiceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 }
 
 func (r *InferenceServiceReconciler) updateStatus(desiredService *v1beta1api.InferenceService, deploymentMode constants.DeploymentModeType) error {
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		existingService := &v1beta1api.InferenceService{}
-		namespacedName := types.NamespacedName{Name: desiredService.Name, Namespace: desiredService.Namespace}
-		if err := r.Get(context.TODO(), namespacedName, existingService); err != nil {
-			return err
+	existingService := &v1beta1api.InferenceService{}
+	namespacedName := types.NamespacedName{Name: desiredService.Name, Namespace: desiredService.Namespace}
+	if err := r.Get(context.TODO(), namespacedName, existingService); err != nil {
+		return err
+	}
+	wasReady := inferenceServiceReadiness(existingService.Status)
+	if inferenceServiceStatusEqual(existingService.Status, desiredService.Status, deploymentMode) {
+		// If we didn't change anything then don't call updateStatus.
+		// This is important because the copy we loaded from the informer's
+		// cache may be stale and we don't want to overwrite a prior update
+		// to status with this stale state.
+	} else if err := r.Status().Update(context.TODO(), desiredService); err != nil {
+		r.Log.Error(err, "Failed to update InferenceService status", "InferenceService", desiredService.Name)
+		r.Recorder.Eventf(desiredService, v1.EventTypeWarning, "UpdateFailed",
+			"Failed to update status for InferenceService %q: %v", desiredService.Name, err)
+		return errors.Wrapf(err, "fails to update InferenceService status")
+	} else {
+		// If there was a difference and there was no error.
+		isReady := inferenceServiceReadiness(desiredService.Status)
+		if wasReady && !isReady { // Moved to NotReady State
+			r.Recorder.Eventf(desiredService, v1.EventTypeWarning, string(InferenceServiceNotReadyState),
+				fmt.Sprintf("InferenceService [%v] is no longer Ready", desiredService.GetName()))
+		} else if !wasReady && isReady { // Moved to Ready State
+			r.Recorder.Eventf(desiredService, v1.EventTypeNormal, string(InferenceServiceReadyState),
+				fmt.Sprintf("InferenceService [%v] is Ready", desiredService.GetName()))
 		}
-		wasReady := inferenceServiceReadiness(existingService.Status)
-		if inferenceServiceStatusEqual(existingService.Status, desiredService.Status, deploymentMode) {
-			// If we didn't change anything then don't call updateStatus.
-			// This is important because the copy we loaded from the informer's
-			// cache may be stale and we don't want to overwrite a prior update
-			// to status with this stale state.
-		} else if err := r.Status().Update(context.TODO(), desiredService); err != nil {
-			if apierr.IsConflict(err) {
-				return err
-			}
-			r.Log.Error(err, "Failed to update InferenceService status", "InferenceService", desiredService.Name)
-			r.Recorder.Eventf(desiredService, v1.EventTypeWarning, "UpdateFailed",
-				"Failed to update status for InferenceService %q: %v", desiredService.Name, err)
-			return errors.Wrapf(err, "fails to update InferenceService status")
-		} else {
-			// If there was a difference and there was no error.
-			isReady := inferenceServiceReadiness(desiredService.Status)
-			if wasReady && !isReady { // Moved to NotReady State
-				r.Recorder.Eventf(desiredService, v1.EventTypeWarning, string(InferenceServiceNotReadyState),
-					fmt.Sprintf("InferenceService [%v] is no longer Ready", desiredService.GetName()))
-			} else if !wasReady && isReady { // Moved to Ready State
-				r.Recorder.Eventf(desiredService, v1.EventTypeNormal, string(InferenceServiceReadyState),
-					fmt.Sprintf("InferenceService [%v] is Ready", desiredService.GetName()))
-			}
-		}
-		return nil
-	})
-	return err
+	}
+	return nil
 }
 
 func inferenceServiceReadiness(status v1beta1api.InferenceServiceStatus) bool {
@@ -328,7 +323,7 @@ func (r *InferenceServiceReconciler) SetupWithManager(mgr ctrl.Manager, deployCo
 		return err
 	}
 
-	vsFound, err := utils.IsCrdAvailable(r.ClientConfig, v1alpha3.SchemeGroupVersion.String(), constants.IstioVirtualServiceKind)
+	vsFound, err := utils.IsCrdAvailable(r.ClientConfig, istioclientv1beta1.SchemeGroupVersion.String(), constants.IstioVirtualServiceKind)
 	if err != nil {
 		return err
 	}
@@ -343,10 +338,10 @@ func (r *InferenceServiceReconciler) SetupWithManager(mgr ctrl.Manager, deployCo
 		r.Log.Info("The InferenceService controller won't watch serving.knative.dev/v1/Service resources because the CRD is not available.")
 	}
 
-	if vsFound && ingressConfig.DisableIstioVirtualHost == false {
-		ctrlBuilder = ctrlBuilder.Owns(&v1alpha3.VirtualService{})
+	if vsFound && !ingressConfig.DisableIstioVirtualHost {
+		ctrlBuilder = ctrlBuilder.Owns(&istioclientv1beta1.VirtualService{})
 	} else {
-		r.Log.Info("The InferenceService controller won't watch networking.istio.io/v1alpha3/VirtualService resources because the CRD is not available.")
+		r.Log.Info("The InferenceService controller won't watch networking.istio.io/v1beta1/VirtualService resources because the CRD is not available.")
 	}
 
 	return ctrlBuilder.Complete(r)

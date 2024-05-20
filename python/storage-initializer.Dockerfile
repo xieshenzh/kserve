@@ -6,7 +6,7 @@ FROM ${BASE_IMAGE} as builder
 
 # Install Poetry
 ARG POETRY_HOME=/opt/poetry
-ARG POETRY_VERSION=1.4.0
+ARG POETRY_VERSION=1.7.1
 
 # Required for building packages for arm64 arch
 RUN yum -y update && yum -y install python39 python39-devel gcc
@@ -33,10 +33,7 @@ RUN yum -y update && yum install -y \
     krb5-devel \
     && rm -rf /var/lib/apt/lists/*
 
-# Fixes CVE-2024-24762 - Regular Expression Denial of Service (ReDoS)
-# Remove the fastapi when this is addressed:  https://issues.redhat.com/browse/RHOAIENG-3894
-# or ray releses a new version that removes the fastapi version pinning and it gets updated on KServe
-RUN pip install --no-cache-dir krbcontext==0.10 hdfs~=2.6.0 requests-kerberos==0.14.0 fastapi==0.109.1
+RUN pip install --no-cache-dir krbcontext==0.10 hdfs~=2.6.0 requests-kerberos==0.14.0
 # Fixes Quay alert GHSA-2jv5-9r88-3w3p https://github.com/Kludex/python-multipart/security/advisories/GHSA-2jv5-9r88-3w3p
 RUN pip install --no-cache-dir starlette==0.36.2
 

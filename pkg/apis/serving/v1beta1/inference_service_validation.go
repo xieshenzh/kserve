@@ -19,6 +19,7 @@ package v1beta1
 import (
 	"fmt"
 	"reflect"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	"strconv"
 
 	"regexp"
@@ -33,7 +34,8 @@ import (
 
 // regular expressions for validation of isvc name
 const (
-	IsvcNameFmt string = "[a-z]([-a-z0-9]*[a-z0-9])?"
+	IsvcNameFmt                         string = "[a-z]([-a-z0-9]*[a-z0-9])?"
+	StorageUriPresentInTransformerError        = "storage uri should not be specified in transformer container"
 )
 
 var (
@@ -47,21 +49,25 @@ var (
 var _ webhook.Validator = &InferenceService{}
 
 // ValidateCreate implements webhook.Validator so a webhook will be registered for the type
-func (isvc *InferenceService) ValidateCreate() error {
+func (isvc *InferenceService) ValidateCreate() (admission.Warnings, error) {
 	validatorLogger.Info("validate create", "name", isvc.Name)
-
+	var allWarnings admission.Warnings
 	annotations := isvc.Annotations
 
 	if err := validateInferenceServiceName(isvc); err != nil {
-		return err
+		return allWarnings, err
 	}
 
 	if err := validateInferenceServiceAutoscaler(isvc); err != nil {
-		return err
+		return allWarnings, err
 	}
 
 	if err := validateAutoscalerTargetUtilizationPercentage(isvc); err != nil {
-		return err
+		return allWarnings, err
+	}
+
+	if err := validateCollocationStorageURI(isvc.Spec.Predictor); err != nil {
+		return allWarnings, err
 	}
 
 	for _, component := range []Component{
@@ -71,18 +77,18 @@ func (isvc *InferenceService) ValidateCreate() error {
 	} {
 		if !reflect.ValueOf(component).IsNil() {
 			if err := validateExactlyOneImplementation(component); err != nil {
-				return err
+				return allWarnings, err
 			}
 			if err := utils.FirstNonNilError([]error{
 				component.GetImplementation().Validate(),
 				component.GetExtensions().Validate(),
 				validateAutoScalingCompExtension(annotations, component.GetExtensions()),
 			}); err != nil {
-				return err
+				return allWarnings, err
 			}
 		}
 	}
-	return nil
+	return allWarnings, nil
 }
 
 // Validate scaling options component extensions
@@ -98,16 +104,16 @@ func validateAutoScalingCompExtension(annotations map[string]string, compExtSpec
 }
 
 // ValidateUpdate implements webhook.Validator so a webhook will be registered for the type
-func (isvc *InferenceService) ValidateUpdate(old runtime.Object) error {
+func (isvc *InferenceService) ValidateUpdate(old runtime.Object) (admission.Warnings, error) {
 	validatorLogger.Info("validate update", "name", isvc.Name)
 
 	return isvc.ValidateCreate()
 }
 
 // ValidateDelete implements webhook.Validator so a webhook will be registered for the type
-func (isvc *InferenceService) ValidateDelete() error {
+func (isvc *InferenceService) ValidateDelete() (admission.Warnings, error) {
 	validatorLogger.Info("validate delete", "name", isvc.Name)
-	return nil
+	return nil, nil
 }
 
 // GetIntReference returns the pointer for the integer input
@@ -218,6 +224,9 @@ func validateKPAMetrics(metric ScaleMetric) error {
 }
 
 func validateScalingKPACompExtension(compExtSpec *ComponentExtensionSpec) error {
+	if compExtSpec.DeploymentStrategy != nil {
+		return fmt.Errorf("customizing deploymentStrategy is only supported for raw deployment mode")
+	}
 	metric := MetricConcurrency
 	if compExtSpec.ScaleMetric != nil {
 		metric = *compExtSpec.ScaleMetric
@@ -233,10 +242,25 @@ func validateScalingKPACompExtension(compExtSpec *ComponentExtensionSpec) error 
 		target := *compExtSpec.ScaleTarget
 
 		if metric == MetricRPS && target < 1 {
-			return fmt.Errorf("The target for rps should be greater than 1")
+			return fmt.Errorf("the target for rps should be greater than 1")
 		}
 
 	}
 
+	return nil
+}
+
+// validates if transformer container has storage uri or not in collocation of predictor and transformer scenario
+func validateCollocationStorageURI(predictorSpec PredictorSpec) error {
+	for _, container := range predictorSpec.Containers {
+		if container.Name == constants.TransformerContainerName {
+			for _, env := range container.Env {
+				if env.Name == constants.CustomSpecStorageUriEnvVarKey {
+					return fmt.Errorf(StorageUriPresentInTransformerError)
+				}
+			}
+			break
+		}
+	}
 	return nil
 }
