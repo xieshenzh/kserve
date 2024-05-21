@@ -14,10 +14,11 @@
 
 import lightgbm as lgb
 import os
+
+import numpy
 from sklearn.datasets import load_iris
 from lgbserver import LightGBMModel
 import pandas as pd
-import numpy
 from kserve.protocol.infer_type import InferInput, InferRequest
 
 model_dir = os.path.join(os.path.dirname(__file__), "example_model", "model")
@@ -46,10 +47,31 @@ def test_model():
                'petal_width_(cm)': {0: 0.2}, 'sepal_length_(cm)': {0: 5.1}}
 
     response = model.predict({"inputs": [request, request]})
-    assert numpy.argmax(response["predictions"][0]) == 2
+    assert numpy.argmax(response["predictions"][0]) == 0
 
     response = model.predict({"instances": [request, request]})
-    assert numpy.argmax(response["predictions"][0]) == 2
+    assert numpy.argmax(response["predictions"][0]) == 0
+
+    request = [
+        {'sepal_width_(cm)': 3.5}, {'petal_length_(cm)': 1.4},
+        {'petal_width_(cm)': 0.2}, {'sepal_length_(cm)': 5.1}
+    ]
+    response = model.predict({"inputs": [request, request]})
+    assert numpy.argmax(response["predictions"][0]) == 0
+
+    response = model.predict({"instances": [request, request]})
+    assert numpy.argmax(response["predictions"][0]) == 0
+
+    request = [
+        {'sepal_width_(cm)': 3.5}, {'petal_length_(cm)': 1.4},
+        {'petal_width_(cm)': 0.2}
+    ]
+    response = model.predict({"inputs": [request, request]})
+    assert numpy.argmax(response["predictions"][0]) == 0
+
+    response = model.predict({"instances": [request, request]})
+    assert numpy.argmax(response["predictions"][0]) == 0
+
     # test v2 handler
     infer_input = InferInput(name="input-0", shape=[2, 4], datatype="FP32",
                              data=[[6.8, 2.8, 4.8, 1.6], [6.0, 3.4, 4.5, 1.6]])

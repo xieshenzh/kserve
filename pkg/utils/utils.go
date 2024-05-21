@@ -160,6 +160,22 @@ func AppendEnvVarIfNotExists(slice []v1.EnvVar, elems ...v1.EnvVar) []v1.EnvVar 
 	return slice
 }
 
+func AppendPortIfNotExists(slice []v1.ContainerPort, elems ...v1.ContainerPort) []v1.ContainerPort {
+	for _, elem := range elems {
+		isElemExists := false
+		for _, item := range slice {
+			if item.Name == elem.Name {
+				isElemExists = true
+				break
+			}
+		}
+		if isElemExists == false {
+			slice = append(slice, elem)
+		}
+	}
+	return slice
+}
+
 // IsCrdAvailable checks if a given CRD is present in the cluster by verifying the
 // existence of its API.
 func IsCrdAvailable(config *rest.Config, groupVersion, kind string) (bool, error) {

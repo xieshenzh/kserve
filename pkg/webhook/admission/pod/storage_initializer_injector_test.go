@@ -18,24 +18,24 @@ package pod
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/onsi/gomega"
+	"github.com/onsi/gomega/types"
+	"github.com/stretchr/testify/assert"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	"k8s.io/apimachinery/pkg/runtime"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"knative.dev/pkg/kmp"
 	"knative.dev/pkg/ptr"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/kserve/kserve/pkg/apis/serving/v1alpha1"
 	"github.com/kserve/kserve/pkg/constants"
 	"github.com/kserve/kserve/pkg/credentials"
 	"github.com/kserve/kserve/pkg/credentials/gcs"
 	"github.com/kserve/kserve/pkg/credentials/s3"
-	"github.com/onsi/gomega"
-	"github.com/onsi/gomega/types"
-	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -69,17 +69,6 @@ var (
 			v1.ResourceMemory: resource.MustParse(StorageInitializerDefaultMemoryRequest),
 		},
 	}
-
-	targetNS = &v1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Namespace: "my-ns",
-			Annotations: map[string]string{
-				OpenShiftUidRangeAnnotationKey: "1000740000/10000",
-			},
-		},
-	}
-
-	expectedInitContainerUid = ptr.Int64(1000740001)
 )
 
 func TestStorageInitializerInjector(t *testing.T) {
@@ -200,9 +189,6 @@ func TestStorageInitializerInjector(t *testing.T) {
 									MountPath: constants.DefaultModelLocalMountPath,
 								},
 							},
-							SecurityContext: &v1.SecurityContext{
-								RunAsUser: expectedInitContainerUid,
-							},
 						},
 					},
 					Volumes: []v1.Volume{
@@ -272,9 +258,6 @@ func TestStorageInitializerInjector(t *testing.T) {
 									Name:      "kserve-provision-location",
 									MountPath: constants.DefaultModelLocalMountPath,
 								},
-							},
-							SecurityContext: &v1.SecurityContext{
-								RunAsUser: expectedInitContainerUid,
 							},
 						},
 					},
@@ -356,9 +339,6 @@ func TestStorageInitializerInjector(t *testing.T) {
 									MountPath: constants.DefaultModelLocalMountPath,
 								},
 							},
-							SecurityContext: &v1.SecurityContext{
-								RunAsUser: expectedInitContainerUid,
-							},
 						},
 					},
 					Volumes: []v1.Volume{
@@ -376,13 +356,13 @@ func TestStorageInitializerInjector(t *testing.T) {
 
 	for name, scenario := range scenarios {
 		injector := &StorageInitializerInjector{
-			credentialBuilder: credentials.NewCredentialBuilder(c, &v1.ConfigMap{
+			credentialBuilder: credentials.NewCredentialBuilder(c, clientset, &v1.ConfigMap{
 				Data: map[string]string{},
 			}),
 			config: storageInitializerConfig,
 			client: c,
 		}
-		if err := injector.InjectStorageInitializer(scenario.original, targetNS); err != nil {
+		if err := injector.InjectStorageInitializer(scenario.original); err != nil {
 			t.Errorf("Test %q unexpected result: %s", name, err)
 		}
 		if diff, _ := kmp.SafeDiff(scenario.expected.Spec, scenario.original.Spec); diff != "" {
@@ -417,158 +397,18 @@ func TestStorageInitializerFailureCases(t *testing.T) {
 
 	for name, scenario := range scenarios {
 		injector := &StorageInitializerInjector{
-			credentialBuilder: credentials.NewCredentialBuilder(c, &v1.ConfigMap{
+			credentialBuilder: credentials.NewCredentialBuilder(c, clientset, &v1.ConfigMap{
 				Data: map[string]string{},
 			}),
 			config: storageInitializerConfig,
 			client: c,
 		}
-		if err := injector.InjectStorageInitializer(scenario.original, targetNS); err != nil {
+		if err := injector.InjectStorageInitializer(scenario.original); err != nil {
 			if !strings.HasPrefix(err.Error(), scenario.expectedErrorPrefix) {
 				t.Errorf("Test %q unexpected failure [%s], expected: %s", name, err.Error(), scenario.expectedErrorPrefix)
 			}
 		} else {
 			t.Errorf("Test %q should have failed with: %s", name, scenario.expectedErrorPrefix)
-		}
-	}
-}
-
-func TestStorageInitializerInjectorUIDHandling(t *testing.T) {
-	scenarios := map[string]struct {
-		namespace *v1.Namespace
-		original  *v1.Pod
-		expected  *v1.Pod
-	}{
-		"NoAnnotationNoUid": {
-			namespace: &v1.Namespace{},
-			original: &v1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						constants.StorageInitializerSourceUriInternalAnnotationKey: "gs://foo",
-					},
-				},
-				Spec: v1.PodSpec{
-					Containers: []v1.Container{
-						{
-							Name: constants.InferenceServiceContainerName,
-						},
-					},
-				},
-			},
-			expected: &v1.Pod{
-				Spec: v1.PodSpec{
-					InitContainers: []v1.Container{
-						{
-							Name:                     "storage-initializer",
-							Image:                    StorageInitializerContainerImage + ":" + StorageInitializerContainerImageVersion,
-							Args:                     []string{"gs://foo", constants.DefaultModelLocalMountPath},
-							Resources:                resourceRequirement,
-							TerminationMessagePolicy: "FallbackToLogsOnError",
-							VolumeMounts: []v1.VolumeMount{
-								{
-									Name:      "kserve-provision-location",
-									MountPath: constants.DefaultModelLocalMountPath,
-								},
-							},
-						},
-					},
-				},
-			},
-		},
-		"UidFromOpenShiftNamespaceAnnotation": {
-			namespace: targetNS,
-			original: &v1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						constants.StorageInitializerSourceUriInternalAnnotationKey: "gs://foo",
-					},
-				},
-				Spec: v1.PodSpec{
-					Containers: []v1.Container{
-						{
-							Name: constants.InferenceServiceContainerName,
-						},
-					},
-				},
-			},
-			expected: &v1.Pod{
-				Spec: v1.PodSpec{
-					InitContainers: []v1.Container{
-						{
-							Name:                     "storage-initializer",
-							Image:                    StorageInitializerContainerImage + ":" + StorageInitializerContainerImageVersion,
-							Args:                     []string{"gs://foo", constants.DefaultModelLocalMountPath},
-							Resources:                resourceRequirement,
-							TerminationMessagePolicy: "FallbackToLogsOnError",
-							VolumeMounts: []v1.VolumeMount{
-								{
-									Name:      "kserve-provision-location",
-									MountPath: constants.DefaultModelLocalMountPath,
-								},
-							},
-							SecurityContext: &v1.SecurityContext{
-								RunAsUser: expectedInitContainerUid,
-							},
-						},
-					},
-				},
-			},
-		},
-		"UidFromPodAnnotation": {
-			namespace: targetNS,
-			original: &v1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						constants.StorageInitializerSourceUriInternalAnnotationKey: "gs://foo",
-						constants.IstioSidecarUIDAnnotationKey:                     "1337",
-					},
-				},
-				Spec: v1.PodSpec{
-					Containers: []v1.Container{
-						{
-							Name: constants.InferenceServiceContainerName,
-						},
-					},
-				},
-			},
-			expected: &v1.Pod{
-				Spec: v1.PodSpec{
-					InitContainers: []v1.Container{
-						{
-							Name:                     "storage-initializer",
-							Image:                    StorageInitializerContainerImage + ":" + StorageInitializerContainerImageVersion,
-							Args:                     []string{"gs://foo", constants.DefaultModelLocalMountPath},
-							Resources:                resourceRequirement,
-							TerminationMessagePolicy: "FallbackToLogsOnError",
-							VolumeMounts: []v1.VolumeMount{
-								{
-									Name:      "kserve-provision-location",
-									MountPath: constants.DefaultModelLocalMountPath,
-								},
-							},
-							SecurityContext: &v1.SecurityContext{
-								RunAsUser: ptr.Int64(1337),
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	for name, scenario := range scenarios {
-		injector := &StorageInitializerInjector{
-			credentialBuilder: credentials.NewCredentialBuilder(c, &v1.ConfigMap{
-				Data: map[string]string{},
-			}),
-			config: storageInitializerConfig,
-			client: c,
-		}
-		if err := injector.InjectStorageInitializer(scenario.original, scenario.namespace); err != nil {
-			t.Errorf("Test %q unexpected result: %s", name, err)
-		}
-		if diff, _ := kmp.SafeDiff(scenario.expected.Spec.InitContainers, scenario.original.Spec.InitContainers); diff != "" {
-			t.Errorf("Test %q unexpected result (-want +got): %v", name, diff)
 		}
 	}
 }
@@ -657,13 +497,13 @@ func TestCustomSpecStorageUriInjection(t *testing.T) {
 
 	for name, scenario := range scenarios {
 		injector := &StorageInitializerInjector{
-			credentialBuilder: credentials.NewCredentialBuilder(c, &v1.ConfigMap{
+			credentialBuilder: credentials.NewCredentialBuilder(c, clientset, &v1.ConfigMap{
 				Data: map[string]string{},
 			}),
 			config: storageInitializerConfig,
 			client: c,
 		}
-		if err := injector.InjectStorageInitializer(scenario.original, targetNS); err != nil {
+		if err := injector.InjectStorageInitializer(scenario.original); err != nil {
 			t.Errorf("Test %q unexpected result: %s", name, err)
 		}
 
@@ -766,9 +606,6 @@ func TestCredentialInjection(t *testing.T) {
 									Name:      "kserve-provision-location",
 									MountPath: constants.DefaultModelLocalMountPath,
 								},
-							},
-							SecurityContext: &v1.SecurityContext{
-								RunAsUser: expectedInitContainerUid,
 							},
 							Env: []v1.EnvVar{
 								{
@@ -875,9 +712,6 @@ func TestCredentialInjection(t *testing.T) {
 									MountPath: gcs.GCSCredentialVolumeMountPath,
 								},
 							},
-							SecurityContext: &v1.SecurityContext{
-								RunAsUser: expectedInitContainerUid,
-							},
 							Env: []v1.EnvVar{
 								{
 									Name:  gcs.GCSCredentialEnvKey,
@@ -966,9 +800,6 @@ func TestCredentialInjection(t *testing.T) {
 							Name:  "storage-initializer",
 							Image: StorageInitializerContainerImage + ":" + StorageInitializerContainerImageVersion,
 							Args:  []string{"s3://my-bucket/foo/bar", constants.DefaultModelLocalMountPath},
-							SecurityContext: &v1.SecurityContext{
-								RunAsUser: expectedInitContainerUid,
-							},
 							Env: []v1.EnvVar{
 								{
 									Name: credentials.StorageConfigEnvKey,
@@ -1064,9 +895,6 @@ func TestCredentialInjection(t *testing.T) {
 							Name:  "storage-initializer",
 							Image: StorageInitializerContainerImage + ":" + StorageInitializerContainerImageVersion,
 							Args:  []string{"s3://my-bucket/foo/bar", constants.DefaultModelLocalMountPath},
-							SecurityContext: &v1.SecurityContext{
-								RunAsUser: expectedInitContainerUid,
-							},
 							Env: []v1.EnvVar{
 								{
 									Name: credentials.StorageConfigEnvKey,
@@ -1117,7 +945,7 @@ func TestCredentialInjection(t *testing.T) {
 		},
 	}
 
-	builder := credentials.NewCredentialBuilder(c, configMap)
+	builder := credentials.NewCredentialBuilder(c, clientset, configMap)
 	for name, scenario := range scenarios {
 		g.Expect(c.Create(context.TODO(), scenario.sa)).NotTo(gomega.HaveOccurred())
 		g.Expect(c.Create(context.TODO(), scenario.secret)).NotTo(gomega.HaveOccurred())
@@ -1127,7 +955,7 @@ func TestCredentialInjection(t *testing.T) {
 			config:            storageInitializerConfig,
 			client:            c,
 		}
-		if err := injector.InjectStorageInitializer(scenario.original, targetNS); err != nil {
+		if err := injector.InjectStorageInitializer(scenario.original); err != nil {
 			t.Errorf("Test %q unexpected failure [%s]", name, err.Error())
 		}
 		if diff, _ := kmp.SafeDiff(scenario.expected.Spec, scenario.original.Spec); diff != "" {
@@ -1191,9 +1019,6 @@ func TestStorageInitializerConfigmap(t *testing.T) {
 									MountPath: constants.DefaultModelLocalMountPath,
 								},
 							},
-							SecurityContext: &v1.SecurityContext{
-								RunAsUser: expectedInitContainerUid,
-							},
 						},
 					},
 					Volumes: []v1.Volume{
@@ -1211,7 +1036,7 @@ func TestStorageInitializerConfigmap(t *testing.T) {
 
 	for name, scenario := range scenarios {
 		injector := &StorageInitializerInjector{
-			credentialBuilder: credentials.NewCredentialBuilder(c, &v1.ConfigMap{
+			credentialBuilder: credentials.NewCredentialBuilder(c, clientset, &v1.ConfigMap{
 				Data: map[string]string{},
 			}),
 			config: &StorageInitializerConfig{
@@ -1225,7 +1050,7 @@ func TestStorageInitializerConfigmap(t *testing.T) {
 			},
 			client: c,
 		}
-		if err := injector.InjectStorageInitializer(scenario.original, targetNS); err != nil {
+		if err := injector.InjectStorageInitializer(scenario.original); err != nil {
 			t.Errorf("Test %q unexpected result: %s", name, err)
 		}
 		if diff, _ := kmp.SafeDiff(scenario.expected.Spec, scenario.original.Spec); diff != "" {
@@ -2048,14 +1873,7 @@ func TestCaBundleConfigMapVolumeMountInStorageInitializer(t *testing.T) {
 		},
 	}
 
-	builder := credentials.NewCredentialBuilder(c, configMap)
-
-	ns := &v1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "default",
-		},
-	}
-
+	builder := credentials.NewCredentialBuilder(c, clientset, configMap)
 	for name, scenario := range scenarios {
 		g.Expect(c.Create(context.TODO(), scenario.sa)).NotTo(gomega.HaveOccurred())
 		g.Expect(c.Create(context.TODO(), scenario.secret)).NotTo(gomega.HaveOccurred())
@@ -2065,7 +1883,7 @@ func TestCaBundleConfigMapVolumeMountInStorageInitializer(t *testing.T) {
 			config:            scenario.storageConfig,
 			client:            c,
 		}
-		if err := injector.InjectStorageInitializer(scenario.original, ns); err != nil {
+		if err := injector.InjectStorageInitializer(scenario.original); err != nil {
 			t.Errorf("Test %q unexpected failure [%s]", name, err.Error())
 		}
 		if diff, _ := kmp.SafeDiff(scenario.expected.Spec, scenario.original.Spec); diff != "" {
@@ -2185,7 +2003,7 @@ func TestDirectVolumeMountForPvc(t *testing.T) {
 
 	for name, scenario := range scenarios {
 		injector := &StorageInitializerInjector{
-			credentialBuilder: credentials.NewCredentialBuilder(c, &v1.ConfigMap{
+			credentialBuilder: credentials.NewCredentialBuilder(c, clientset, &v1.ConfigMap{
 				Data: map[string]string{},
 			}),
 			config: &StorageInitializerConfig{
@@ -2193,7 +2011,7 @@ func TestDirectVolumeMountForPvc(t *testing.T) {
 			},
 			client: c,
 		}
-		if err := injector.InjectStorageInitializer(scenario.original, targetNS); err != nil {
+		if err := injector.InjectStorageInitializer(scenario.original); err != nil {
 			t.Errorf("Test %q unexpected result: %s", name, err)
 		}
 		if diff, _ := kmp.SafeDiff(scenario.expected.Spec, scenario.original.Spec); diff != "" {
@@ -2228,13 +2046,8 @@ func TestTransformerCollocation(t *testing.T) {
 							},
 						},
 						{
-							Name: constants.TransformerContainerName,
-							Env: []v1.EnvVar{
-								{
-									Name:  constants.CustomSpecStorageUriEnvVarKey,
-									Value: "pvc://mypvcname/some/path/on/pvc",
-								},
-							},
+							Name:  constants.TransformerContainerName,
+							Image: "test/image:latest",
 						},
 					},
 				},
@@ -2267,13 +2080,8 @@ func TestTransformerCollocation(t *testing.T) {
 							},
 						},
 						{
-							Name: constants.TransformerContainerName,
-							Env: []v1.EnvVar{
-								{
-									Name:  constants.CustomSpecStorageUriEnvVarKey,
-									Value: constants.DefaultModelLocalMountPath,
-								},
-							},
+							Name:  constants.TransformerContainerName,
+							Image: "test/image:latest",
 							VolumeMounts: []v1.VolumeMount{
 								{
 									Name:      "kserve-pvc-source",
@@ -2305,9 +2113,6 @@ func TestTransformerCollocation(t *testing.T) {
 									Name:      "kserve-provision-location",
 									MountPath: constants.DefaultModelLocalMountPath,
 								},
-							},
-							SecurityContext: &v1.SecurityContext{
-								RunAsUser: expectedInitContainerUid,
 							},
 						},
 					},
@@ -2353,13 +2158,8 @@ func TestTransformerCollocation(t *testing.T) {
 							},
 						},
 						{
-							Name: constants.TransformerContainerName,
-							Env: []v1.EnvVar{
-								{
-									Name:  constants.CustomSpecStorageUriEnvVarKey,
-									Value: "pvc://mypvcname/some/path/on/pvc",
-								},
-							},
+							Name:  constants.TransformerContainerName,
+							Image: "test/image:latest",
 						},
 					},
 				},
@@ -2388,13 +2188,8 @@ func TestTransformerCollocation(t *testing.T) {
 							},
 						},
 						{
-							Name: constants.TransformerContainerName,
-							Env: []v1.EnvVar{
-								{
-									Name:  constants.CustomSpecStorageUriEnvVarKey,
-									Value: constants.DefaultModelLocalMountPath,
-								},
-							},
+							Name:  constants.TransformerContainerName,
+							Image: "test/image:latest",
 							VolumeMounts: []v1.VolumeMount{
 								{
 									Name:      "kserve-pvc-source",
@@ -2487,9 +2282,6 @@ func TestTransformerCollocation(t *testing.T) {
 									MountPath: constants.DefaultModelLocalMountPath,
 								},
 							},
-							SecurityContext: &v1.SecurityContext{
-								RunAsUser: expectedInitContainerUid,
-							},
 						},
 					},
 					Volumes: []v1.Volume{
@@ -2516,13 +2308,13 @@ func TestTransformerCollocation(t *testing.T) {
 
 	for name, scenario := range scenarios {
 		injector := &StorageInitializerInjector{
-			credentialBuilder: credentials.NewCredentialBuilder(c, &v1.ConfigMap{
+			credentialBuilder: credentials.NewCredentialBuilder(c, clientset, &v1.ConfigMap{
 				Data: map[string]string{},
 			}),
 			config: scenario.storageConfig,
 			client: c,
 		}
-		if err := injector.InjectStorageInitializer(scenario.original, targetNS); err != nil {
+		if err := injector.InjectStorageInitializer(scenario.original); err != nil {
 			t.Errorf("Test %q unexpected result: %s", name, err)
 		}
 		if diff, _ := kmp.SafeDiff(scenario.expected.Spec, scenario.original.Spec); diff != "" {
@@ -2551,7 +2343,7 @@ func TestGetStorageContainerSpec(t *testing.T) {
 	}
 	s3AzureSpec := v1alpha1.ClusterStorageContainer{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "s3Azure",
+			Name: "s3-azure",
 		},
 		Spec: v1alpha1.StorageContainerSpec{
 			Container: v1.Container{
@@ -2565,16 +2357,21 @@ func TestGetStorageContainerSpec(t *testing.T) {
 			SupportedUriFormats: []v1alpha1.SupportedUriFormat{{Prefix: "s3://"}, {Regex: "https://(.+?).blob.core.windows.net/(.+)"}},
 		},
 	}
-	storageContainerSpecs := &v1alpha1.ClusterStorageContainerList{
-		Items: []v1alpha1.ClusterStorageContainer{customSpec, s3AzureSpec},
-	}
 
-	s := runtime.NewScheme()
-	err := v1alpha1.AddToScheme(s)
-	if err != nil {
-		t.Errorf("unable to add scheme : %v", err)
+	if err := c.Create(context.TODO(), &s3AzureSpec); err != nil {
+		t.Fatalf("unable to create cluster storage container: %v", err)
 	}
-	mockClient := fake.NewClientBuilder().WithLists(storageContainerSpecs).WithScheme(s).Build()
+	if err := c.Create(context.TODO(), &customSpec); err != nil {
+		t.Fatalf("unable to create cluster storage container: %v", err)
+	}
+	defer func() {
+		if err := c.Delete(context.TODO(), &s3AzureSpec); err != nil {
+			t.Errorf("unable to delete cluster storage container: %v", err)
+		}
+		if err := c.Delete(context.TODO(), &customSpec); err != nil {
+			t.Errorf("unable to delete cluster storage container: %v", err)
+		}
+	}()
 	scenarios := map[string]struct {
 		storageUri   string
 		expectedSpec *v1.Container
@@ -2594,8 +2391,9 @@ func TestGetStorageContainerSpec(t *testing.T) {
 	}
 	for name, scenario := range scenarios {
 		var container *v1.Container
+		var err error
 
-		if container, err = GetContainerSpecForStorageUri(scenario.storageUri, mockClient); err != nil {
+		if container, err = GetContainerSpecForStorageUri(scenario.storageUri, c); err != nil {
 			t.Errorf("Test %q unexpected result: %s", name, err)
 		}
 		g.Expect(container).To(gomega.Equal(scenario.expectedSpec))
@@ -2621,7 +2419,7 @@ func TestStorageContainerCRDInjection(t *testing.T) {
 	}
 	s3AzureSpec := v1alpha1.ClusterStorageContainer{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "s3Azure",
+			Name: "s3-azure",
 		},
 		Spec: v1alpha1.StorageContainerSpec{
 			Container: v1.Container{
@@ -2638,16 +2436,21 @@ func TestStorageContainerCRDInjection(t *testing.T) {
 			SupportedUriFormats: []v1alpha1.SupportedUriFormat{{Prefix: "s3://"}, {Regex: "https://(.+?).blob.core.windows.net/(.+)"}},
 		},
 	}
-	storageContainerSpecs := &v1alpha1.ClusterStorageContainerList{
-		Items: []v1alpha1.ClusterStorageContainer{customSpec, s3AzureSpec},
+	if err := c.Create(context.TODO(), &s3AzureSpec); err != nil {
+		t.Fatalf("unable to create cluster storage container: %v", err)
 	}
+	if err := c.Create(context.TODO(), &customSpec); err != nil {
+		t.Fatalf("unable to create cluster storage container: %v", err)
+	}
+	defer func() {
+		if err := c.Delete(context.TODO(), &s3AzureSpec); err != nil {
+			t.Errorf("unable to delete cluster storage container: %v", err)
+		}
+		if err := c.Delete(context.TODO(), &customSpec); err != nil {
+			t.Errorf("unable to delete cluster storage container: %v", err)
+		}
+	}()
 
-	s := runtime.NewScheme()
-	err := v1alpha1.AddToScheme(s)
-	if err != nil {
-		t.Errorf("unable to add scheme : %v", err)
-	}
-	mockClient := fake.NewClientBuilder().WithLists(storageContainerSpecs).WithScheme(s).Build()
 	scenarios := map[string]struct {
 		original *v1.Pod
 		expected *v1.Pod
@@ -2711,9 +2514,6 @@ func TestStorageContainerCRDInjection(t *testing.T) {
 							Env: []v1.EnvVar{
 								{Name: "name", Value: "value"},
 							},
-							SecurityContext: &v1.SecurityContext{
-								RunAsUser: expectedInitContainerUid,
-							},
 						},
 					},
 					Volumes: []v1.Volume{
@@ -2774,9 +2574,6 @@ func TestStorageContainerCRDInjection(t *testing.T) {
 									MountPath: constants.DefaultModelLocalMountPath,
 								},
 							},
-							SecurityContext: &v1.SecurityContext{
-								RunAsUser: expectedInitContainerUid,
-							},
 						},
 					},
 					Volumes: []v1.Volume{
@@ -2793,14 +2590,1087 @@ func TestStorageContainerCRDInjection(t *testing.T) {
 	}
 	for name, scenario := range scenarios {
 		injector := &StorageInitializerInjector{
-			credentialBuilder: credentials.NewCredentialBuilder(mockClient, &v1.ConfigMap{
+			credentialBuilder: credentials.NewCredentialBuilder(c, clientset, &v1.ConfigMap{
 				Data: map[string]string{},
 			}),
 			config: storageInitializerConfig,
-			client: mockClient,
+			client: c,
 		}
 
-		if err = injector.InjectStorageInitializer(scenario.original, targetNS); err != nil {
+		if err := injector.InjectStorageInitializer(scenario.original); err != nil {
+			t.Errorf("Test %q unexpected result: %s", name, err)
+		}
+		if diff, _ := kmp.SafeDiff(scenario.expected.Spec, scenario.original.Spec); diff != "" {
+			t.Errorf("Test %q unexpected result (-want +got): %v", name, diff)
+		}
+	}
+}
+
+func TestAddOrReplaceEnv(t *testing.T) {
+	tests := []struct {
+		name       string
+		container  *v1.Container
+		envKey     string
+		envValue   string
+		wantEnvLen int
+		wantValue  string
+	}{
+		{
+			name:       "nil env array",
+			container:  &v1.Container{},
+			envKey:     "TEST_KEY",
+			envValue:   "test_value",
+			wantEnvLen: 1,
+			wantValue:  "test_value",
+		},
+		{
+			name: "env array without key",
+			container: &v1.Container{
+				Env: []v1.EnvVar{
+					{Name: "EXISTING_KEY", Value: "existing_value"},
+				},
+			},
+			envKey:     "TEST_KEY",
+			envValue:   "test_value",
+			wantEnvLen: 2,
+			wantValue:  "test_value",
+		},
+		{
+			name: "env array with existing key",
+			container: &v1.Container{
+				Env: []v1.EnvVar{
+					{Name: "TEST_KEY", Value: "old_value"},
+				},
+			},
+			envKey:     "TEST_KEY",
+			envValue:   "new_value",
+			wantEnvLen: 1,
+			wantValue:  "new_value",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			addOrReplaceEnv(tt.container, tt.envKey, tt.envValue)
+
+			if len(tt.container.Env) != tt.wantEnvLen {
+				t.Errorf("Expected env length %d, but got %d", tt.wantEnvLen, len(tt.container.Env))
+			}
+
+			for _, envVar := range tt.container.Env {
+				if envVar.Name == tt.envKey && envVar.Value != tt.wantValue {
+					t.Errorf("Expected value for %s to be %s, but got %s", tt.envKey, tt.wantValue, envVar.Value)
+				}
+			}
+		})
+	}
+}
+
+func TestInjectModelcar(t *testing.T) {
+	// Test when annotation key is not set
+	{
+		pod := &v1.Pod{}
+		mi := &StorageInitializerInjector{}
+		err := mi.InjectModelcar(pod)
+
+		if err != nil {
+			t.Errorf("Expected nil error but got %v", err)
+		}
+		if len(pod.Spec.Containers) != 0 {
+			t.Errorf("Expected no containers but got %d", len(pod.Spec.Containers))
+		}
+	}
+
+	// Test when srcURI does not start with OciURIPrefix
+	{
+		pod := &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{
+					constants.StorageInitializerSourceUriInternalAnnotationKey: "s3://bla/blub",
+				},
+			},
+		}
+		mi := &StorageInitializerInjector{}
+		err := mi.InjectModelcar(pod)
+
+		if err != nil {
+			t.Errorf("Expected nil error but got %v", err)
+		}
+		if len(pod.Spec.Containers) != 0 {
+			t.Errorf("Expected no containers but got %d", len(pod.Spec.Containers))
+		}
+	}
+
+	// Test when srcURI starts with OciURIPrefix
+	{
+		pod := createTestPodForModelcar()
+		mi := &StorageInitializerInjector{
+			config: &StorageInitializerConfig{},
+		}
+		err := mi.InjectModelcar(pod)
+
+		if err != nil {
+			t.Errorf("Expected nil error but got %v", err)
+		}
+
+		// Check that an emptyDir volume has been attached
+		if len(pod.Spec.Volumes) != 1 || pod.Spec.Volumes[0].Name != StorageInitializerVolumeName {
+			t.Errorf("Expected one volume with name %s, but got %v", StorageInitializerVolumeName, pod.Spec.Volumes)
+		}
+
+		// Check that a sidecar container has been injected
+		if len(pod.Spec.Containers) != 2 {
+			t.Errorf("Expected two containers but got %d", len(pod.Spec.Containers))
+		}
+
+		// Check that the user-container has an env var set
+		found := false
+		if pod.Spec.Containers[0].Env != nil {
+			for _, env := range pod.Spec.Containers[0].Env {
+				if env.Name == ModelInitModeEnv && env.Value == "async" {
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			t.Errorf("Expected env var %s=async but did not find it", ModelInitModeEnv)
+		}
+
+		// Check volume mounts in both containers
+		if len(pod.Spec.Containers[0].VolumeMounts) != 1 || len(pod.Spec.Containers[1].VolumeMounts) != 1 {
+			t.Errorf("Expected one volume mount in each container but got user-container: %d, sidecar-container: %d",
+				len(pod.Spec.Containers[0].VolumeMounts), len(pod.Spec.Containers[1].VolumeMounts))
+		}
+
+		// Check ShareProcessNamespace
+		if pod.Spec.ShareProcessNamespace == nil || *pod.Spec.ShareProcessNamespace != true {
+			t.Errorf("Expected ShareProcessNamespace to be true but got %v", pod.Spec.ShareProcessNamespace)
+		}
+	}
+}
+
+func createTestPodForModelcar() *v1.Pod {
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{
+				constants.StorageInitializerSourceUriInternalAnnotationKey: OciURIPrefix + "myrepo/mymodelimage",
+			},
+		},
+		Spec: v1.PodSpec{
+			Containers: []v1.Container{
+				{Name: constants.InferenceServiceContainerName},
+			},
+		},
+	}
+	return pod
+}
+
+func createTestPodForModelcarWithTransformer() *v1.Pod {
+	pod := createTestPodForModelcar()
+	pod.Spec.Containers = append(pod.Spec.Containers, v1.Container{Name: constants.TransformerContainerName})
+	return pod
+}
+
+func TestModelcarVolumeMounts(t *testing.T) {
+	t.Run("Test that volume mounts has been added (no transformer)", func(t *testing.T) {
+		pod := createTestPodForModelcar()
+		assert.Nil(t, getContainerWithName(pod, constants.TransformerContainerName))
+		checkVolumeMounts(t, pod, []string{ModelcarContainerName, constants.InferenceServiceContainerName})
+	})
+
+	t.Run("Test that volume mounts has been added (with transformer)", func(t *testing.T) {
+		pod := createTestPodForModelcarWithTransformer()
+		checkVolumeMounts(t, pod, []string{ModelcarContainerName, constants.InferenceServiceContainerName, constants.TransformerContainerName})
+	})
+}
+
+func checkVolumeMounts(t *testing.T, pod *v1.Pod, containerNames []string) {
+	injector := &StorageInitializerInjector{config: &StorageInitializerConfig{}}
+	err := injector.InjectModelcar(pod)
+	assert.Nil(t, err)
+
+	for _, containerName := range containerNames {
+		container := getContainerWithName(pod, containerName)
+		assert.NotNil(t, container)
+		volumeMounts := container.VolumeMounts
+		assert.NotEmpty(t, volumeMounts)
+		assert.Len(t, volumeMounts, 1)
+		assert.Equal(t, volumeMounts[0].MountPath, getParentDirectory(constants.DefaultModelLocalMountPath))
+	}
+}
+
+func TestModelcarIdempotency(t *testing.T) {
+	t.Run("Test that calling the modelcar injector twice results with the same input pod, the injected pod is the same", func(t *testing.T) {
+		podReference := createTestPodForModelcarWithTransformer()
+		pod := createTestPodForModelcarWithTransformer()
+
+		injector := &StorageInitializerInjector{config: &StorageInitializerConfig{}}
+
+		// Inject modelcar twice
+		err := injector.InjectModelcar(pod)
+		assert.Nil(t, err)
+		err = injector.InjectModelcar(pod)
+		assert.Nil(t, err)
+
+		// Reference modelcar
+		err = injector.InjectModelcar(podReference)
+		assert.Nil(t, err)
+
+		// It should not make a difference if the modelcar is injected once or twice
+		assert.True(t, reflect.DeepEqual(podReference, pod))
+	})
+}
+
+func TestStorageInitializerInjectorWithModelcarConfig(t *testing.T) {
+	t.Run("Test empty config", func(t *testing.T) {
+		config := &StorageInitializerConfig{}
+		injector := &StorageInitializerInjector{config: config}
+
+		pod := createTestPodForModelcar()
+		err := injector.InjectModelcar(pod)
+		assert.Nil(t, err)
+
+		// Assertions
+		modelcarContainer := getContainerWithName(pod, ModelcarContainerName)
+		assert.NotNil(t, modelcarContainer)
+		assert.Equal(t, resource.MustParse(CpuModelcarDefault), modelcarContainer.Resources.Limits["cpu"])
+		assert.Equal(t, resource.MustParse(MemoryModelcarDefault), modelcarContainer.Resources.Limits["memory"])
+		assert.Equal(t, resource.MustParse(CpuModelcarDefault), modelcarContainer.Resources.Requests["cpu"])
+		assert.Equal(t, resource.MustParse(MemoryModelcarDefault), modelcarContainer.Resources.Requests["memory"])
+		assert.Nil(t, modelcarContainer.SecurityContext)
+	})
+
+	t.Run("Test uidModelcar config", func(t *testing.T) {
+		config := &StorageInitializerConfig{UidModelcar: ptr.Int64(10)}
+		injector := &StorageInitializerInjector{config: config}
+
+		pod := createTestPodForModelcar()
+		err := injector.InjectModelcar(pod)
+		assert.Nil(t, err)
+
+		// Assertions
+		modelcarContainer := getContainerWithName(pod, ModelcarContainerName)
+		userContainer := getContainerWithName(pod, constants.InferenceServiceContainerName)
+		assert.NotNil(t, modelcarContainer)
+		assert.NotNil(t, userContainer)
+		assert.Equal(t, int64(10), *modelcarContainer.SecurityContext.RunAsUser)
+		assert.Equal(t, int64(10), *userContainer.SecurityContext.RunAsUser)
+	})
+
+	t.Run("Test CPU and Memory config", func(t *testing.T) {
+		config := &StorageInitializerConfig{CpuModelcar: "50m", MemoryModelcar: "50Mi"}
+		injector := &StorageInitializerInjector{config: config}
+
+		pod := createTestPodForModelcar()
+		err := injector.InjectModelcar(pod)
+		assert.Nil(t, err)
+
+		// Assertions
+		modelcarContainer := getContainerWithName(pod, ModelcarContainerName)
+		assert.NotNil(t, modelcarContainer)
+		assert.Equal(t, resource.MustParse("50m"), modelcarContainer.Resources.Limits["cpu"])
+		assert.Equal(t, resource.MustParse("50Mi"), modelcarContainer.Resources.Requests["memory"])
+		assert.Equal(t, resource.MustParse("50m"), modelcarContainer.Resources.Limits["cpu"])
+		assert.Equal(t, resource.MustParse("50Mi"), modelcarContainer.Resources.Requests["memory"])
+	})
+}
+
+func TestGetContainerWithName(t *testing.T) {
+	// Test case: Container exists
+	{
+		pod := &v1.Pod{
+			Spec: v1.PodSpec{
+				Containers: []v1.Container{
+					{Name: "container-1"},
+					{Name: "container-2"},
+				},
+			},
+		}
+
+		seekName := "container-1"
+		got := getContainerWithName(pod, seekName)
+
+		if got == nil {
+			t.Errorf("Expected a container, but got nil")
+		} else if got.Name != seekName {
+			t.Errorf("Expected container name %s, but got %s", seekName, got.Name)
+		}
+	}
+
+	// Test case: Container does not exist
+	{
+		pod := &v1.Pod{
+			Spec: v1.PodSpec{
+				Containers: []v1.Container{
+					{Name: "container-1"},
+					{Name: "container-2"},
+				},
+			},
+		}
+
+		seekName := "non-existent-container"
+		got := getContainerWithName(pod, seekName)
+
+		if got != nil {
+			t.Errorf("Expected nil, but got a container")
+		}
+	}
+}
+
+func TestStorageInitializerUIDForIstioCNI(t *testing.T) {
+	scenarios := map[string]struct {
+		original *v1.Pod
+		expected *v1.Pod
+	}{
+		"StorageInitializerCniUidSet": {
+			original: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						constants.StorageInitializerSourceUriInternalAnnotationKey: "gs://foo",
+						constants.IstioSidecarStatusAnnotation:                     "{\"containers\": [\"istio-sidecar\"]}",
+						constants.IstioInterceptionModeAnnotation:                  constants.IstioInterceptModeRedirect,
+					},
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: constants.InferenceServiceContainerName,
+						},
+						{
+							Name: "istio-sidecar",
+							SecurityContext: &v1.SecurityContext{
+								RunAsUser: ptr.Int64(501),
+							},
+						},
+					},
+				},
+			},
+			expected: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						constants.StorageInitializerSourceUriInternalAnnotationKey: "gs://foo",
+					},
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: constants.InferenceServiceContainerName,
+							VolumeMounts: []v1.VolumeMount{
+								{
+									Name:      "kserve-provision-location",
+									MountPath: constants.DefaultModelLocalMountPath,
+									ReadOnly:  true,
+								},
+							},
+						},
+						{
+							Name: "istio-sidecar",
+							SecurityContext: &v1.SecurityContext{
+								RunAsUser: ptr.Int64(501),
+							},
+						},
+					},
+					InitContainers: []v1.Container{
+						{
+							Name:                     "storage-initializer",
+							Image:                    StorageInitializerContainerImage + ":" + StorageInitializerContainerImageVersion,
+							Args:                     []string{"gs://foo", constants.DefaultModelLocalMountPath},
+							Resources:                resourceRequirement,
+							TerminationMessagePolicy: "FallbackToLogsOnError",
+							VolumeMounts: []v1.VolumeMount{
+								{
+									Name:      "kserve-provision-location",
+									MountPath: constants.DefaultModelLocalMountPath,
+								},
+							},
+							SecurityContext: &v1.SecurityContext{
+								RunAsUser: ptr.Int64(501),
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "kserve-provision-location",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{},
+							},
+						},
+					},
+				},
+			},
+		},
+		"StorageInitializerCniUidDefault": {
+			original: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						constants.StorageInitializerSourceUriInternalAnnotationKey: "gs://foo",
+						constants.IstioSidecarStatusAnnotation:                     "{\"containers\": [\"istio-sidecar\"]}",
+						constants.IstioInterceptionModeAnnotation:                  constants.IstioInterceptModeRedirect,
+					},
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: constants.InferenceServiceContainerName,
+						},
+						{
+							Name: "istio-sidecar",
+						},
+					},
+				},
+			},
+			expected: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						constants.StorageInitializerSourceUriInternalAnnotationKey: "gs://foo",
+					},
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: constants.InferenceServiceContainerName,
+							VolumeMounts: []v1.VolumeMount{
+								{
+									Name:      "kserve-provision-location",
+									MountPath: constants.DefaultModelLocalMountPath,
+									ReadOnly:  true,
+								},
+							},
+						},
+						{
+							Name: "istio-sidecar",
+						},
+					},
+					InitContainers: []v1.Container{
+						{
+							Name:                     "storage-initializer",
+							Image:                    StorageInitializerContainerImage + ":" + StorageInitializerContainerImageVersion,
+							Args:                     []string{"gs://foo", constants.DefaultModelLocalMountPath},
+							Resources:                resourceRequirement,
+							TerminationMessagePolicy: "FallbackToLogsOnError",
+							VolumeMounts: []v1.VolumeMount{
+								{
+									Name:      "kserve-provision-location",
+									MountPath: constants.DefaultModelLocalMountPath,
+								},
+							},
+							SecurityContext: &v1.SecurityContext{
+								RunAsUser: ptr.Int64(1337),
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "kserve-provision-location",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{},
+							},
+						},
+					},
+				},
+			},
+		},
+		"StorageInitializerUidNotSetIfIstioInitPresent": {
+			original: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						constants.StorageInitializerSourceUriInternalAnnotationKey: "gs://foo",
+						constants.IstioSidecarStatusAnnotation:                     "{\"containers\": [\"istio-sidecar\"]}",
+						constants.IstioInterceptionModeAnnotation:                  constants.IstioInterceptModeRedirect,
+					},
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: constants.InferenceServiceContainerName,
+						},
+						{
+							Name: "istio-sidecar",
+							SecurityContext: &v1.SecurityContext{
+								RunAsUser: ptr.Int64(501),
+							},
+						},
+					},
+					InitContainers: []v1.Container{
+						{
+							Name: constants.IstioInitContainerName,
+						},
+					},
+				},
+			},
+			expected: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						constants.StorageInitializerSourceUriInternalAnnotationKey: "gs://foo",
+					},
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: constants.InferenceServiceContainerName,
+							VolumeMounts: []v1.VolumeMount{
+								{
+									Name:      "kserve-provision-location",
+									MountPath: constants.DefaultModelLocalMountPath,
+									ReadOnly:  true,
+								},
+							},
+						},
+						{
+							Name: "istio-sidecar",
+							SecurityContext: &v1.SecurityContext{
+								RunAsUser: ptr.Int64(501),
+							},
+						},
+					},
+					InitContainers: []v1.Container{
+						{
+							Name: constants.IstioInitContainerName,
+						},
+						{
+							Name:                     "storage-initializer",
+							Image:                    StorageInitializerContainerImage + ":" + StorageInitializerContainerImageVersion,
+							Args:                     []string{"gs://foo", constants.DefaultModelLocalMountPath},
+							Resources:                resourceRequirement,
+							TerminationMessagePolicy: "FallbackToLogsOnError",
+							VolumeMounts: []v1.VolumeMount{
+								{
+									Name:      "kserve-provision-location",
+									MountPath: constants.DefaultModelLocalMountPath,
+								},
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "kserve-provision-location",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{},
+							},
+						},
+					},
+				},
+			},
+		},
+		"StorageInitializerUidNotSetIfProxyMissing": {
+			original: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						constants.StorageInitializerSourceUriInternalAnnotationKey: "gs://foo",
+						constants.IstioSidecarStatusAnnotation:                     "{\"containers\": [\"istio-sidecar\"]}",
+						constants.IstioInterceptionModeAnnotation:                  constants.IstioInterceptModeRedirect,
+					},
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: constants.InferenceServiceContainerName,
+						},
+					},
+				},
+			},
+			expected: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						constants.StorageInitializerSourceUriInternalAnnotationKey: "gs://foo",
+					},
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: constants.InferenceServiceContainerName,
+							VolumeMounts: []v1.VolumeMount{
+								{
+									Name:      "kserve-provision-location",
+									MountPath: constants.DefaultModelLocalMountPath,
+									ReadOnly:  true,
+								},
+							},
+						},
+					},
+					InitContainers: []v1.Container{
+						{
+							Name:                     "storage-initializer",
+							Image:                    StorageInitializerContainerImage + ":" + StorageInitializerContainerImageVersion,
+							Args:                     []string{"gs://foo", constants.DefaultModelLocalMountPath},
+							Resources:                resourceRequirement,
+							TerminationMessagePolicy: "FallbackToLogsOnError",
+							VolumeMounts: []v1.VolumeMount{
+								{
+									Name:      "kserve-provision-location",
+									MountPath: constants.DefaultModelLocalMountPath,
+								},
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "kserve-provision-location",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{},
+							},
+						},
+					},
+				},
+			},
+		},
+		"StorageInitializerUidNotSetIfProxyNameMissing": {
+			original: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						constants.StorageInitializerSourceUriInternalAnnotationKey: "gs://foo",
+						constants.IstioSidecarStatusAnnotation:                     "{\"containers\": []}",
+						constants.IstioInterceptionModeAnnotation:                  constants.IstioInterceptModeRedirect,
+					},
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: constants.InferenceServiceContainerName,
+						},
+						{
+							Name: "istio-sidecar",
+							SecurityContext: &v1.SecurityContext{
+								RunAsUser: ptr.Int64(501),
+							},
+						},
+					},
+				},
+			},
+			expected: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						constants.StorageInitializerSourceUriInternalAnnotationKey: "gs://foo",
+					},
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: constants.InferenceServiceContainerName,
+							VolumeMounts: []v1.VolumeMount{
+								{
+									Name:      "kserve-provision-location",
+									MountPath: constants.DefaultModelLocalMountPath,
+									ReadOnly:  true,
+								},
+							},
+						},
+						{
+							Name: "istio-sidecar",
+							SecurityContext: &v1.SecurityContext{
+								RunAsUser: ptr.Int64(501),
+							},
+						},
+					},
+					InitContainers: []v1.Container{
+						{
+							Name:                     "storage-initializer",
+							Image:                    StorageInitializerContainerImage + ":" + StorageInitializerContainerImageVersion,
+							Args:                     []string{"gs://foo", constants.DefaultModelLocalMountPath},
+							Resources:                resourceRequirement,
+							TerminationMessagePolicy: "FallbackToLogsOnError",
+							VolumeMounts: []v1.VolumeMount{
+								{
+									Name:      "kserve-provision-location",
+									MountPath: constants.DefaultModelLocalMountPath,
+								},
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "kserve-provision-location",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{},
+							},
+						},
+					},
+				},
+			},
+		},
+		"StorageInitializerUidNotSetIfIstioStatusBlank": {
+			original: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						constants.StorageInitializerSourceUriInternalAnnotationKey: "gs://foo",
+						constants.IstioSidecarStatusAnnotation:                     "{}",
+						constants.IstioInterceptionModeAnnotation:                  constants.IstioInterceptModeRedirect,
+					},
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: constants.InferenceServiceContainerName,
+						},
+						{
+							Name: "istio-sidecar",
+							SecurityContext: &v1.SecurityContext{
+								RunAsUser: ptr.Int64(501),
+							},
+						},
+					},
+				},
+			},
+			expected: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						constants.StorageInitializerSourceUriInternalAnnotationKey: "gs://foo",
+					},
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: constants.InferenceServiceContainerName,
+							VolumeMounts: []v1.VolumeMount{
+								{
+									Name:      "kserve-provision-location",
+									MountPath: constants.DefaultModelLocalMountPath,
+									ReadOnly:  true,
+								},
+							},
+						},
+						{
+							Name: "istio-sidecar",
+							SecurityContext: &v1.SecurityContext{
+								RunAsUser: ptr.Int64(501),
+							},
+						},
+					},
+					InitContainers: []v1.Container{
+						{
+							Name:                     "storage-initializer",
+							Image:                    StorageInitializerContainerImage + ":" + StorageInitializerContainerImageVersion,
+							Args:                     []string{"gs://foo", constants.DefaultModelLocalMountPath},
+							Resources:                resourceRequirement,
+							TerminationMessagePolicy: "FallbackToLogsOnError",
+							VolumeMounts: []v1.VolumeMount{
+								{
+									Name:      "kserve-provision-location",
+									MountPath: constants.DefaultModelLocalMountPath,
+								},
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "kserve-provision-location",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{},
+							},
+						},
+					},
+				},
+			},
+		},
+		"StorageInitializerUidNotSetIfInterceptModeNotRedirect": {
+			original: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						constants.StorageInitializerSourceUriInternalAnnotationKey: "gs://foo",
+						constants.IstioSidecarStatusAnnotation:                     "{\"containers\": [\"istio-sidecar\"]}",
+						constants.IstioInterceptionModeAnnotation:                  "OTHER_REDIRECT",
+					},
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: constants.InferenceServiceContainerName,
+						},
+						{
+							Name: "istio-sidecar",
+							SecurityContext: &v1.SecurityContext{
+								RunAsUser: ptr.Int64(501),
+							},
+						},
+					},
+				},
+			},
+			expected: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						constants.StorageInitializerSourceUriInternalAnnotationKey: "gs://foo",
+					},
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: constants.InferenceServiceContainerName,
+							VolumeMounts: []v1.VolumeMount{
+								{
+									Name:      "kserve-provision-location",
+									MountPath: constants.DefaultModelLocalMountPath,
+									ReadOnly:  true,
+								},
+							},
+						},
+						{
+							Name: "istio-sidecar",
+							SecurityContext: &v1.SecurityContext{
+								RunAsUser: ptr.Int64(501),
+							},
+						},
+					},
+					InitContainers: []v1.Container{
+						{
+							Name:                     "storage-initializer",
+							Image:                    StorageInitializerContainerImage + ":" + StorageInitializerContainerImageVersion,
+							Args:                     []string{"gs://foo", constants.DefaultModelLocalMountPath},
+							Resources:                resourceRequirement,
+							TerminationMessagePolicy: "FallbackToLogsOnError",
+							VolumeMounts: []v1.VolumeMount{
+								{
+									Name:      "kserve-provision-location",
+									MountPath: constants.DefaultModelLocalMountPath,
+								},
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "kserve-provision-location",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{},
+							},
+						},
+					},
+				},
+			},
+		},
+		"StorageInitializerUidNotSetIfInterceptModeMissing": {
+			original: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						constants.StorageInitializerSourceUriInternalAnnotationKey: "gs://foo",
+						constants.IstioSidecarStatusAnnotation:                     "{\"containers\": [\"istio-sidecar\"]}",
+					},
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: constants.InferenceServiceContainerName,
+						},
+						{
+							Name: "istio-sidecar",
+							SecurityContext: &v1.SecurityContext{
+								RunAsUser: ptr.Int64(501),
+							},
+						},
+					},
+				},
+			},
+			expected: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						constants.StorageInitializerSourceUriInternalAnnotationKey: "gs://foo",
+					},
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: constants.InferenceServiceContainerName,
+							VolumeMounts: []v1.VolumeMount{
+								{
+									Name:      "kserve-provision-location",
+									MountPath: constants.DefaultModelLocalMountPath,
+									ReadOnly:  true,
+								},
+							},
+						},
+						{
+							Name: "istio-sidecar",
+							SecurityContext: &v1.SecurityContext{
+								RunAsUser: ptr.Int64(501),
+							},
+						},
+					},
+					InitContainers: []v1.Container{
+						{
+							Name:                     "storage-initializer",
+							Image:                    StorageInitializerContainerImage + ":" + StorageInitializerContainerImageVersion,
+							Args:                     []string{"gs://foo", constants.DefaultModelLocalMountPath},
+							Resources:                resourceRequirement,
+							TerminationMessagePolicy: "FallbackToLogsOnError",
+							VolumeMounts: []v1.VolumeMount{
+								{
+									Name:      "kserve-provision-location",
+									MountPath: constants.DefaultModelLocalMountPath,
+								},
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "kserve-provision-location",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{},
+							},
+						},
+					},
+				},
+			},
+		},
+		"StorageInitializerUidNotSetIfIstioStatusMissing": {
+			original: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						constants.StorageInitializerSourceUriInternalAnnotationKey: "gs://foo",
+						constants.IstioInterceptionModeAnnotation:                  constants.IstioInterceptModeRedirect,
+					},
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: constants.InferenceServiceContainerName,
+						},
+						{
+							Name: "istio-sidecar",
+							SecurityContext: &v1.SecurityContext{
+								RunAsUser: ptr.Int64(501),
+							},
+						},
+					},
+				},
+			},
+			expected: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						constants.StorageInitializerSourceUriInternalAnnotationKey: "gs://foo",
+					},
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: constants.InferenceServiceContainerName,
+							VolumeMounts: []v1.VolumeMount{
+								{
+									Name:      "kserve-provision-location",
+									MountPath: constants.DefaultModelLocalMountPath,
+									ReadOnly:  true,
+								},
+							},
+						},
+						{
+							Name: "istio-sidecar",
+							SecurityContext: &v1.SecurityContext{
+								RunAsUser: ptr.Int64(501),
+							},
+						},
+					},
+					InitContainers: []v1.Container{
+						{
+							Name:                     "storage-initializer",
+							Image:                    StorageInitializerContainerImage + ":" + StorageInitializerContainerImageVersion,
+							Args:                     []string{"gs://foo", constants.DefaultModelLocalMountPath},
+							Resources:                resourceRequirement,
+							TerminationMessagePolicy: "FallbackToLogsOnError",
+							VolumeMounts: []v1.VolumeMount{
+								{
+									Name:      "kserve-provision-location",
+									MountPath: constants.DefaultModelLocalMountPath,
+								},
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "kserve-provision-location",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{},
+							},
+						},
+					},
+				},
+			},
+		},
+		"StorageInitializerUidNotSetIfIstioStatusEmpty": {
+			original: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						constants.StorageInitializerSourceUriInternalAnnotationKey: "gs://foo",
+						constants.IstioSidecarStatusAnnotation:                     "{\"containers\": []}",
+						constants.IstioInterceptionModeAnnotation:                  constants.IstioInterceptModeRedirect,
+					},
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: constants.InferenceServiceContainerName,
+						},
+						{
+							Name: "istio-sidecar",
+							SecurityContext: &v1.SecurityContext{
+								RunAsUser: ptr.Int64(501),
+							},
+						},
+					},
+				},
+			},
+			expected: &v1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						constants.StorageInitializerSourceUriInternalAnnotationKey: "gs://foo",
+					},
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: constants.InferenceServiceContainerName,
+							VolumeMounts: []v1.VolumeMount{
+								{
+									Name:      "kserve-provision-location",
+									MountPath: constants.DefaultModelLocalMountPath,
+									ReadOnly:  true,
+								},
+							},
+						},
+						{
+							Name: "istio-sidecar",
+							SecurityContext: &v1.SecurityContext{
+								RunAsUser: ptr.Int64(501),
+							},
+						},
+					},
+					InitContainers: []v1.Container{
+						{
+							Name:                     "storage-initializer",
+							Image:                    StorageInitializerContainerImage + ":" + StorageInitializerContainerImageVersion,
+							Args:                     []string{"gs://foo", constants.DefaultModelLocalMountPath},
+							Resources:                resourceRequirement,
+							TerminationMessagePolicy: "FallbackToLogsOnError",
+							VolumeMounts: []v1.VolumeMount{
+								{
+									Name:      "kserve-provision-location",
+									MountPath: constants.DefaultModelLocalMountPath,
+								},
+							},
+						},
+					},
+					Volumes: []v1.Volume{
+						{
+							Name: "kserve-provision-location",
+							VolumeSource: v1.VolumeSource{
+								EmptyDir: &v1.EmptyDirVolumeSource{},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for name, scenario := range scenarios {
+		injector := &StorageInitializerInjector{
+			credentialBuilder: credentials.NewCredentialBuilder(c, clientset, &v1.ConfigMap{
+				Data: map[string]string{},
+			}),
+			config: storageInitializerConfig,
+			client: c,
+		}
+		if err := injector.InjectStorageInitializer(scenario.original); err != nil {
+			t.Errorf("Test %q unexpected result: %s", name, err)
+		}
+		if err := injector.SetIstioCniSecurityContext(scenario.original); err != nil {
 			t.Errorf("Test %q unexpected result: %s", name, err)
 		}
 		if diff, _ := kmp.SafeDiff(scenario.expected.Spec, scenario.original.Spec); diff != "" {
