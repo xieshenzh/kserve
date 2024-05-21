@@ -183,6 +183,7 @@ def test_get_S3_config():
     DEFAULT_CONFIG = Config()
     ANON_CONFIG = Config(signature_version=UNSIGNED)
     VIRTUAL_CONFIG = Config(s3={"addressing_style": "virtual"})
+    USE_ACCELERATE_CONFIG = Config(s3={"use_accelerate_endpoint": True})
 
     with mock.patch.dict(os.environ, {}):
         config1 = Storage.get_S3_config()
@@ -214,6 +215,14 @@ def test_get_S3_config():
         config7 = Storage.get_S3_config()
     assert config7.s3["addressing_style"] == VIRTUAL_CONFIG.s3["addressing_style"]
 
+    with mock.patch.dict(os.environ, {"S3_USE_ACCELERATE": "False"}):
+        config6 = Storage.get_S3_config()
+    assert vars(config6) == vars(DEFAULT_CONFIG)
+
+    with mock.patch.dict(os.environ, {"S3_USE_ACCELERATE": "True"}):
+        config7 = Storage.get_S3_config()
+    assert config7.s3["use_accelerate_endpoint"] == USE_ACCELERATE_CONFIG.s3["use_accelerate_endpoint"]
+
 
 def test_update_with_storage_spec_s3(monkeypatch):
     # save the environment and restore it after the test to avoid mutating it
@@ -242,7 +251,7 @@ def test_update_with_storage_spec_s3(monkeypatch):
         "region": "us-east-2",
         "secret_access_key": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         "type": "s3",
-        "ca_bundle": "/path/to/ca.bundle",
+        "ca_bundle": "/path/to/cabundle.crt",
         "verify_ssl": "false",
         "anonymous": "True",
     }
@@ -260,3 +269,22 @@ def test_update_with_storage_spec_s3(monkeypatch):
 
     # revert changes
     os.environ = previous_env
+
+
+@mock.patch(STORAGE_MODULE + '.boto3')
+def test_target_startswith_parent_folder_name(mock_storage):
+    bucket_name = 'foo'
+    paths = ["model.pkl", "a/model.pkl", "conda.yaml"]
+    object_paths = ['test/artifacts/model/' + p for p in paths]
+
+    # when
+    mock_boto3_bucket = create_mock_boto3_bucket(mock_storage, object_paths)
+    Storage._download_s3(
+        f's3://{bucket_name}/test/artifacts/model', 'dest_path')
+
+    # then
+    arg_list = get_call_args(mock_boto3_bucket.download_file.call_args_list)
+    assert arg_list[0] == expected_call_args_list(
+        'test/artifacts/model', 'dest_path', paths)[0]
+    mock_boto3_bucket.objects.filter.assert_called_with(
+        Prefix='test/artifacts/model')

@@ -13,18 +13,19 @@
 # limitations under the License.
 
 from importlib import metadata
-from typing import Dict, Union, Tuple, Optional
+from typing import Dict, Union, Tuple, Optional, Any, AsyncIterator
 
 import cloudevents.exceptions as ce
 import orjson
-import ray
+
 from cloudevents.http import CloudEvent, from_http
 from cloudevents.sdk.converters.util import has_binary_headers
-from ray.serve.handle import RayServeHandle, RayServeSyncHandle, DeploymentHandle
+from ray.serve.handle import DeploymentHandle
 
+from .rest.v2_datamodels import GenerateRequest, GenerateResponse
 from ..model import Model
 from ..errors import InvalidInput, ModelNotFound
-from ..model import ModelType
+from ..model import InferenceVerb
 from ..model_repository import ModelRepository
 from ..utils.utils import create_response_cloudevent, is_structured_cloudevent
 from .infer_type import InferRequest, InferResponse
@@ -38,7 +39,9 @@ JSON_HEADERS = ["application/json", "application/cloudevents+json", "application
 # RayServeSyncHandle has been the return type of serve.run since Ray 2.5.
 # DeploymentHandle will be the new return type (still under feature flag in Ray 2.7).
 # ref https://github.com/ray-project/ray/pull/37817
-ModelHandleType = Union[Model, RayServeHandle, RayServeSyncHandle, DeploymentHandle]
+# On Ray 2.10, it now returns DeploymentHandle:
+# https://docs.ray.io/en/latest/serve/api/index.html#deployment-handles
+ModelHandleType = Union[Model, DeploymentHandle]
 
 
 class DataPlane:
@@ -169,10 +172,7 @@ class DataPlane:
         # TODO: model versioning is not supported yet
         model = self.get_model_from_registry(model_name)
 
-        if isinstance(model, RayServeSyncHandle):
-            input_types = ray.get(model.get_input_types.remote())
-            output_types = ray.get(model.get_output_types.remote())
-        elif isinstance(model, (RayServeHandle, DeploymentHandle)):
+        if isinstance(model, DeploymentHandle):
             input_types = await model.get_input_types.remote()
             output_types = await model.get_output_types.remote()
         else:
@@ -315,12 +315,34 @@ class DataPlane:
         """
         # call model locally or remote model workers
         model = self.get_model(model_name)
-        if isinstance(model, RayServeSyncHandle):
-            response = ray.get(model.remote(request, headers=headers))
-        elif isinstance(model, (RayServeHandle, DeploymentHandle)):
+        if isinstance(model, DeploymentHandle):
             response = await model.remote(request, headers=headers)
         else:
             response = await model(request, headers=headers)
+        return response, headers
+
+    async def generate(
+            self,
+            model_name: str,
+            request: Union[Dict, GenerateRequest],
+            headers: Optional[Dict[str, str]] = None
+    ) -> Tuple[Union[GenerateResponse, AsyncIterator[Any]], Dict[str, str]]:
+        """Generate the text with the provided text prompt.
+
+        Args:
+            model_name (str): Model name.
+            request (bytes|GenerateRequest): Generate Request body data.
+            headers: (Optional[Dict[str, str]]): Request headers.
+
+        Returns:
+            response: The generated output or output stream.
+            response_headers: Headers to construct the HTTP response.
+
+        Raises:
+            InvalidInput: An error when the body bytes can't be decoded as JSON.
+        """
+        model = self.get_model(model_name)
+        response = await model.generate(request, headers=headers)
         return response, headers
 
     async def explain(self, model_name: str,
@@ -342,10 +364,8 @@ class DataPlane:
         """
         # call model locally or remote model workers
         model = self.get_model(model_name)
-        if isinstance(model, RayServeSyncHandle):
-            response = ray.get(model.remote(request, model_type=ModelType.EXPLAINER))
-        elif isinstance(model, (RayServeHandle, DeploymentHandle)):
-            response = await model.remote(request, model_type=ModelType.EXPLAINER)
+        if isinstance(model, DeploymentHandle):
+            response = await model.remote(request, verb=InferenceVerb.EXPLAIN)
         else:
-            response = await model(request, model_type=ModelType.EXPLAINER)
+            response = await model(request, verb=InferenceVerb.EXPLAIN)
         return response, headers

@@ -53,7 +53,7 @@ def test_triton():
     kserve_client = KServeClient(config_file=os.environ.get("KUBECONFIG", "~/.kube/config"))
     kserve_client.create(isvc)
     try:
-        kserve_client.wait_isvc_ready(service_name, namespace=KSERVE_TEST_NAMESPACE)
+        kserve_client.wait_isvc_ready(service_name, namespace=KSERVE_TEST_NAMESPACE, timeout_seconds=800)
     except RuntimeError as e:
         print(kserve_client.api_instance.get_namespaced_custom_object("serving.knative.dev", "v1",
                                                                       KSERVE_TEST_NAMESPACE,
@@ -80,9 +80,8 @@ def test_triton_runtime_with_transformer():
         min_replicas=1,
         model=V1beta1ModelSpec(
             model_format=V1beta1ModelFormat(
-                name="pytorch",
+                name="triton",
             ),
-            runtime="kserve-tritonserver",
             storage_uri='gs://kfserving-examples/models/torchscript',
             ports=[V1ContainerPort(name="h2c", protocol="TCP", container_port=9000)],
             resources=V1ResourceRequirements(
@@ -95,13 +94,12 @@ def test_triton_runtime_with_transformer():
     transformer = V1beta1TransformerSpec(
         min_replicas=1,
         containers=[V1Container(
-                      image='kserve/image-transformer:'
-                            + os.environ.get("GITHUB_SHA"),
+                      image=os.environ.get("IMAGE_TRANSFORMER_IMG"),
                       name='kserve-container',
                       resources=V1ResourceRequirements(
                           requests={'cpu': '10m', 'memory': '128Mi'},
                           limits={'cpu': '100m', 'memory': '512Mi'}),
-                      args=["--model_name", "cifar10", "--protocol", "grpc-v2"])]
+                      args=["--model_name", "cifar10", "--predictor_protocol", "grpc-v2"])]
     )
     isvc = V1beta1InferenceService(api_version=constants.KSERVE_V1BETA1,
                                    kind=constants.KSERVE_KIND,
@@ -112,7 +110,7 @@ def test_triton_runtime_with_transformer():
     kserve_client = KServeClient(config_file=os.environ.get("KUBECONFIG", "~/.kube/config"))
     kserve_client.create(isvc)
     try:
-        kserve_client.wait_isvc_ready(service_name, namespace=KSERVE_TEST_NAMESPACE)
+        kserve_client.wait_isvc_ready(service_name, namespace=KSERVE_TEST_NAMESPACE, timeout_seconds=800)
     except RuntimeError as e:
         print(kserve_client.api_instance.get_namespaced_custom_object("serving.knative.dev", "v1",
                                                                       KSERVE_TEST_NAMESPACE,
