@@ -252,7 +252,7 @@ func (mi *StorageInitializerInjector) InjectStorageInitializer(pod *v1.Pod) erro
 				MountPath: constants.DefaultModelLocalMountPath,
 				// only path to volume's root ("") or folder is supported
 				SubPath:  pvcPath,
-				ReadOnly: true,
+				ReadOnly: false,
 			}
 
 			// Check if PVC source URIs is already mounted
@@ -298,7 +298,7 @@ func (mi *StorageInitializerInjector) InjectStorageInitializer(pod *v1.Pod) erro
 		pvcSourceVolumeMount := v1.VolumeMount{
 			Name:      PvcSourceMountName,
 			MountPath: PvcSourceMountPath,
-			ReadOnly:  true,
+			ReadOnly:  false,
 		}
 		storageInitializerMounts = append(storageInitializerMounts, pvcSourceVolumeMount)
 
@@ -361,7 +361,7 @@ func (mi *StorageInitializerInjector) InjectStorageInitializer(pod *v1.Pod) erro
 	sharedVolumeReadMount := v1.VolumeMount{
 		Name:      StorageInitializerVolumeName,
 		MountPath: constants.DefaultModelLocalMountPath,
-		ReadOnly:  true,
+		ReadOnly:  false,
 	}
 	userContainer.VolumeMounts = append(userContainer.VolumeMounts, sharedVolumeReadMount)
 	if transformerContainer != nil {
