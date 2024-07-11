@@ -480,6 +480,8 @@ data:
         "enableModelcar": false,
         "cpuModelcar": "10m",
         "memoryModelcar": "15Mi"
+        "enableModelcar": true, 
+        "uidModelcar": 1010
     }
 
   credentials: |-
